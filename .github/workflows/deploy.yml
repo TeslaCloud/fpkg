@@ -1,4 +1,4 @@
-# After CI passes on main (or, running CI first, by hand or on `fdoc-updated`): build fdoc.wasm,
+# After CI passes on master (or, running CI first, by hand or on `fdoc-updated`): build fdoc.wasm,
 # migrate D1, deploy with the new FDOC_VERSION and purge the docs cache. Secrets: server/README.md.
 name: Deploy
 
@@ -6,7 +6,7 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
+    branches: [master]
   repository_dispatch:
     types: [fdoc-updated]
   workflow_dispatch:

@@ -67,12 +67,12 @@ Done once by hand. Everything below needs `npx wrangler login` (or
    `CLOUDFLARE_API_TOKEN` (permissions: Workers Scripts Edit, Workers Routes
    Edit, D1 Edit, Workers R2 Storage Edit, Queues Edit, Zone Cache Purge),
    `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`, and optionally
-   `D1_DATABASE_ID`. Every deploy is gated on CI: after a CI run on `main`
+   `D1_DATABASE_ID`. Every deploy is gated on CI: after a CI run on `master`
    (workflow_run), or by running the CI workflow itself first
    (`workflow_call`) for manual and `fdoc-updated` deploys. The workflow uses
    a `production` environment, which GitHub creates on first use (add
    protection rules there if wanted).
-10. **Optional, "change fdoc and push":** deploys run after CI on `main` of
+10. **Optional, "change fdoc and push":** deploys run after CI on `master` of
     this repository. To redeploy when `Meow/fdoc` changes, add a workflow
     there that runs
     `gh api repos/<owner>/fpkg/dispatches -f event_type=fdoc-updated`
