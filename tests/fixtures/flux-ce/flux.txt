@@ -1,0 +1,5 @@
+"flux"
+{
+  "title"   "Flux"
+  "base"    "sandbox"
+}

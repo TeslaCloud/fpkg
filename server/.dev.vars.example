@@ -1,0 +1,5 @@
+# Copy to .dev.vars (git-ignored) for `npm run dev`.
+SESSION_SECRET=change-me-to-32-random-bytes-of-hex
+# A GitHub OAuth app whose callback is http://127.0.0.1:8788/auth/github/callback
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=

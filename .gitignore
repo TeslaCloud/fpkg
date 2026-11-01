@@ -1,0 +1,6 @@
+/target
+/vendor/luajit-src
+/server/node_modules
+/server/wasm
+/server/.wrangler
+.DS_Store

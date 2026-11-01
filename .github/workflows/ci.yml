@@ -1,0 +1,89 @@
+# cargo test, the server's tests, and the conformance suite against `wrangler dev`.
+# fpkg, nl-lang/nl (fpkg-core depends on ../nl) and Meow/fdoc are checked out side by side.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  # deploy.yml runs CI itself for the triggers that do not come from CI.
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.workflow == 'CI' }}
+
+jobs:
+  rust:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: fpkg }
+      - uses: actions/checkout@v4
+        with: { repository: nl-lang/nl, path: nl }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: fpkg }
+      - name: Prepare the nl LuaJIT fork
+        working-directory: fpkg
+        run: scripts/prepare-nl.sh
+      - name: cargo test
+        working-directory: fpkg
+        run: cargo test --workspace
+
+  server:
+    name: server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fpkg/server
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: fpkg }
+      - uses: actions/checkout@v4
+        with: { repository: Meow/fdoc, path: fdoc }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: fdoc }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: fpkg/server/package-lock.json
+      - run: npm ci
+      - name: Build fdoc.wasm
+        run: scripts/build-fdoc.sh
+      - run: npm run typecheck
+      - run: npm test
+
+  conformance:
+    name: conformance against wrangler dev
+    runs-on: ubuntu-latest
+    needs: [rust, server]
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: fpkg }
+      - uses: actions/checkout@v4
+        with: { repository: nl-lang/nl, path: nl }
+      - uses: actions/checkout@v4
+        with: { repository: Meow/fdoc, path: fdoc }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "fpkg\nfdoc" }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: fpkg/server/package-lock.json
+      - name: Prepare the nl LuaJIT fork
+        working-directory: fpkg
+        run: scripts/prepare-nl.sh
+      - name: npm ci
+        working-directory: fpkg/server
+        run: npm ci
+      - name: Conformance suite and smoke checks
+        working-directory: fpkg/server
+        run: scripts/conformance.sh

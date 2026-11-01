@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+fpkg-core = { path = "crates/fpkg-core" }
+
+[patch.crates-io]
+# The nl fork of LuaJIT as a luajit-src crate, prepared by scripts/prepare-nl.sh
+# from ../nl. A build without it fails at link time on nl_version_0_1.
+luajit-src = { path = "vendor/luajit-src" }

@@ -1,0 +1,58 @@
+# fluxpkg.dev and docs.fluxpkg.dev: one Worker, dispatching on the host.
+# README.md lists the one-time account setup.
+name = "fluxpkg"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+workers_dev = false
+
+routes = [
+  { pattern = "fluxpkg.dev/*", zone_name = "fluxpkg.dev" },
+  { pattern = "docs.fluxpkg.dev/*", zone_name = "fluxpkg.dev" },
+]
+
+# Workers Paid: unzipping and generating docs needs more than the free CPU.
+[limits]
+cpu_ms = 30000
+
+[vars]
+# GitHub logins (comma or space separated) that may yank and add owners anywhere.
+ADMIN_LOGINS = "Meow"
+# Overridden at deploy from .fdoc-version (scripts/build-fdoc.sh).
+FDOC_VERSION = "dev"
+# Absolute URLs written into responses; local runs override them with --var.
+SITE_URL = "https://fluxpkg.dev"
+DOCS_URL = "https://docs.fluxpkg.dev"
+
+# Secrets (`wrangler secret put`; .dev.vars locally): SESSION_SECRET (HMAC key,
+# e.g. `openssl rand -hex 32`), GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fluxpkg"
+database_id = "06129604-353d-4102-b4d9-f1b720956510"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ARCHIVES"
+bucket_name = "fluxpkg-archives"
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "fluxpkg-docs"
+
+[[queues.producers]]
+binding = "DOCS_QUEUE"
+queue = "fluxpkg-docs"
+
+[[queues.consumers]]
+queue = "fluxpkg-docs"
+# One job per invocation, so each gets the whole CPU budget.
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 3
+
+# Lets src/docs/fdoc.ts import wasm/fdoc.wasm as a compiled WebAssembly.Module.
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false

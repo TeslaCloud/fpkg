@@ -1,0 +1,46 @@
+[package]
+name = "fpkg-core"
+description = "Flux package management: specs, archives, lockfiles, resolution, registries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dirs = "7.0.0"
+hex = "0.4.3"
+ignore = "0.4.34"
+libc = "0.2.191"
+nl = { path = "../../../nl/crates/nl" }
+pubgrub = "0.4.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
+toml = "1.1.8"
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+url = "2.5.8"
+walkdir = "2.5.0"
+zip = { version = "9.2.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# The registry conformance suite, at the workspace root.
+[[test]]
+name = "conformance"
+path = "../../tests/conformance/main.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+walkdir = "2.5.0"
+
+# The spec evaluator child process, for tests and embedding hosts (the CLI runs
+# itself as `fpkg __eval-spec`).
+[[bin]]
+name = "fpkg-eval-spec"
+path = "src/bin/fpkg-eval-spec.rs"
+
+# Hostile specs against the process evaluator.
+[[test]]
+name = "sandbox"
+path = "../../tests/sandbox/main.rs"
