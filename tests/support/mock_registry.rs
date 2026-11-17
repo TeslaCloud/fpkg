@@ -273,7 +273,7 @@ impl State {
                         return Err(error(422, "mismatch", "the URL and the metadata disagree", &["id/version".into()]));
                     }
                     let published = self.reg.publish(&meta, &archive, &token).map_err(from_registry)?;
-                    json(201, &self.with_docs(published))
+                    json(201, &self.with_docs(published.meta))
                 }
                 _ => error(404, "not_found", "no such route", &[]),
             })

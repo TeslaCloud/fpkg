@@ -244,6 +244,11 @@ pub struct PackageDoc {
     pub latest: Option<String>,
     #[serde(default, deserialize_with = "de_versions")]
     pub versions: BTreeMap<String, VersionMeta>,
+    /// `"pending"` while the package awaits a registry admin's approval (then
+    /// only its owners get the document at all); absent on registries without
+    /// approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 impl PackageDoc {
@@ -330,6 +335,15 @@ pub struct Identity {
     pub login: String,
     #[serde(default)]
     pub token_name: Option<String>,
+}
+
+/// What a publish returned: the version as the registry stores it, and whether
+/// the package is new and waits for a registry admin's approval (HTTP 202), in
+/// which case only its owners can see it until then.
+#[derive(Clone, Debug)]
+pub struct Published {
+    pub meta: VersionMeta,
+    pub pending: bool,
 }
 
 /// What an HTTP error status means.
@@ -484,7 +498,7 @@ pub trait Registry {
     fn package(&self, id: &PackageId) -> Result<Option<PackageDoc>>;
     fn version(&self, id: &PackageId, v: &Version) -> Result<Option<VersionMeta>>;
     fn archive(&self, id: &PackageId, v: &Version) -> Result<Vec<u8>>;
-    fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<VersionMeta>;
+    fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<Published>;
     fn yank(&self, id: &PackageId, v: &Version, yanked: bool, auth: &Token) -> Result<()>;
     fn owners(&self, id: &PackageId) -> Result<Vec<String>>;
     fn set_owner(&self, id: &PackageId, login: &str, add: bool, auth: &Token) -> Result<()>;
@@ -512,7 +526,7 @@ macro_rules! forward_registry {
         fn archive(&self, id: &PackageId, v: &Version) -> Result<Vec<u8>> {
             <$t>::archive(self, id, v)
         }
-        fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<VersionMeta> {
+        fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<Published> {
             <$t>::publish(self, meta, archive, auth)
         }
         fn yank(&self, id: &PackageId, v: &Version, yanked: bool, auth: &Token) -> Result<()> {

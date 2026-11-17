@@ -188,6 +188,8 @@ export interface VersionRow {
   published_by_login: string;
   docs_status?: string;
   docs_version?: string | null;
+  /** Null while the package is pending; absent only from rows built without the packages join. */
+  package_approved_at?: string | null;
 }
 
 export interface Urls {

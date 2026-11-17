@@ -51,6 +51,10 @@ check("422 with details when the spec's version disagrees", res.status === 422 &
 
 res = await publish();
 const published = await res.json().catch(() => ({}));
+if (res.status === 202) {
+  console.error("FAIL PUT publish -> 202: the package awaits approval, so nothing below can see it; run the smoke checks with an admin's token");
+  process.exit(1);
+}
 check("PUT publish -> 201 with dist", res.status === 201 && published.dist?.sha256 === sha, `${res.status} ${JSON.stringify(published).slice(0, 200)}`);
 check("PUT the same version again -> 409", (await publish()).status === 409);
 

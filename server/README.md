@@ -6,12 +6,12 @@ compiled to WebAssembly.
 
 ```
 wrangler.toml          routes, bindings, limits, vars (secrets are set with wrangler, not stored)
-migrations/            D1 schema: 0001_init.sql, 0002_docs_state.sql, 0003_docs_queue.sql
+migrations/            D1 schema: 0001_init.sql, 0002_docs_state.sql, 0003_docs_queue.sql, 0004_approval.sql
 src/index.ts           fetch (host dispatch) and queue entry points
 src/api/               /api/v1: reads, publish (publish.ts), yank, owners, search, me
 src/docs/              docs host (host.ts), generation and queue consumer (generate.ts), wasm glue (fdoc.ts)
-src/web/               website: index, search, package pages, archive sources, GitHub login, tokens
-src/lib/               version grammar, zip validation, packagespec literal scan, cache, auth, D1 queries, multipart
+src/web/               website (index.ts: front page, search, package pages, archive sources, GitHub login, tokens), sessions (session.ts), admin pages (admin.ts)
+src/lib/               version grammar, zip validation, packagespec literal scan, cache, auth, D1 queries, multipart, package mutations (packages.ts)
 scripts/build-fdoc.sh  builds wasm/fdoc.wasm from ../../fdoc (or $FDOC_DIR) and writes .fdoc-version
 scripts/conformance.sh wrangler dev + local D1/R2/queue, seeds a token, runs the Rust suite and smoke checks
 scripts/smoke.mjs      HTTP smoke checks against any running registry
@@ -62,7 +62,9 @@ Done once by hand. Everything below needs `npx wrangler login` (or
    Rotating `SESSION_SECRET` logs everyone out of the website; API tokens are
    unaffected.
 8. **Admins:** set `ADMIN_LOGINS` in `wrangler.toml` (comma or space
-   separated GitHub logins).
+   separated GitHub logins). A package that is new to the registry is held
+   until an admin approves it at `https://fluxpkg.dev/admin` (see *Approval*
+   below), so set at least one admin before anyone publishes.
 9. **GitHub Actions secrets** for `.github/workflows/deploy.yml`:
    `CLOUDFLARE_API_TOKEN` (permissions: Workers Scripts Edit, Workers Routes
    Edit, D1 Edit, Workers R2 Storage Edit, Queues Edit, Zone Cache Purge),
@@ -106,6 +108,10 @@ npx wrangler d1 execute DB --local --command "INSERT INTO users (github_id, logi
 echo "$TOKEN"
 ```
 
+`me` is not in `ADMIN_LOGINS`, so packages it publishes are pending: approve
+them at `/admin` logged in as an admin, or add `me` to `ADMIN_LOGINS` in
+`wrangler.toml` while developing.
+
 ## Conformance
 
 ```sh
@@ -130,10 +136,10 @@ Paths are under `/api/v1`. Every response carries `X-Fpkg-Api: 1`; errors are
 
 | Endpoint | Success | Notes |
 | --- | --- | --- |
-| `GET /packages/{id}` | `200` package document | `404 not_found` for an unknown id |
+| `GET /packages/{id}` | `200` package document (`id`, `revision`, `status`, `owners`, `latest`, `versions`) | `404 not_found` for an unknown id, or a pending one unless the bearer token is an owner's or an admin's |
 | `GET /packages/{id}/versions/{v}` | `200` version metadata | a non-canonical `{v}` (`1.0`, `07.0.9`) answers `301` to the canonical URL |
 | `GET .../archive` | `200` zip | `Content-Disposition: attachment; filename="<id>-<v>.zip"`, `Content-Length`; `301` like the above |
-| `PUT /packages/{id}/versions/{v}` | `201` version metadata with `dist`, `Location` | multipart `metadata` + `archive`; `{v}` must be canonical (`X.Y.Z[-suffix]`) |
+| `PUT /packages/{id}/versions/{v}` | `201` version metadata with `dist`, `Location`; `202` when the package awaits approval | multipart `metadata` + `archive`; `{v}` must be canonical (`X.Y.Z[-suffix]`) |
 | `POST .../yank`, `.../unyank` | `200` version metadata | idempotent; no revision bump when nothing changes; any spelling of `{v}` |
 | `GET /packages/{id}/owners` | `200 { "id", "owners": [login...] }` | `ETag "<id>-<revision>"`, `Cache-Control: no-cache`, `304` |
 | `PUT /packages/{id}/owners/{login}` | `200 { "id", "owners" }` | idempotent; `404 user_not_found` unless the user has logged in once |
@@ -143,7 +149,8 @@ Paths are under `/api/v1`. Every response carries `X-Fpkg-Api: 1`; errors are
 
 Error codes: `bad_request` (400: not multipart, unparsable body, bad query
 parameters), `unauthorized` (401, with `WWW-Authenticate`), `forbidden`
-(403: not an owner), `not_found` / `user_not_found` (404),
+(403: not an owner), `pending_limit` (403: more than 10 new packages awaiting
+approval), `not_found` / `user_not_found` (404),
 `method_not_allowed` (405, with `Allow`), `version_exists` (409),
 `publish_in_progress` (409, with `Retry-After`), `last_owner` (409),
 `payload_too_large` (413), `validation_failed` (422, with `details`, an
@@ -216,8 +223,32 @@ array of human-readable strings, each prefixed with where the problem is:
   multipart overhead, when the archive part exceeds 64 MiB, or when the
   metadata part exceeds 1 MiB. The body is read once and the parts are views
   into it, so a maximal archive is resident once in the 128 MiB Worker.
+* **Approval.** The first publish of an id by a non-admin creates the package
+  as *pending* (`packages.approved_at IS NULL`) and answers `202`; an admin's
+  new package is approved at once (`201`). A pending package does not exist
+  for anyone but its owners and admins: the API answers `404` unless the bearer
+  token is theirs (then `Cache-Control: no-store`, and such downloads are not
+  counted), the website shows the package page and archive sources to their
+  session only, search and the front page leave it out, the docs host has
+  nothing for it and its docs jobs are not queued, and no publish may depend
+  on it. Its owners can keep publishing versions (`202` each). A user may have
+  created at most 10 packages that are still pending (`403 pending_limit`;
+  counted by `packages.created_by`, so handing a package to other owners
+  neither evades the cap nor fills someone else's). Write requests still tell
+  that an id is taken (`403` on a publish of it, `409` on its versions), as
+  they do for any reserved id. Admins approve or reject
+  at `/admin`: approval sets `approved_at`/`approved_by`, bumps the revision
+  and queues the docs of every version; rejection deletes the package, its
+  versions, owners, download counts and archives, so the id is free again. An
+  approved package is never deleted. Packages created before migration 0004
+  are approved. Every admin action is written to `admin_actions`.
 * **Admins** (`ADMIN_LOGINS`) can yank and unyank any version and add owners
-  to any package; removing owners and publishing need ownership. Admins are
+  to any package through the API; removing owners and publishing there need
+  ownership, while the admin pages also remove owners (never the last). The admin
+  pages (`/admin`: the approval queue, every package with its owners,
+  versions, yank/unyank and owner forms, every user, and the action log) check
+  the login of the session's user row, not the cookie's, so a session signed
+  before another account took the login loses its rights at once. Admins are
   identified by GitHub login, and logins can be renamed and later taken by
   someone else, so keep `ADMIN_LOGINS` current when an admin renames.
 * **Pre-releases:** a suffixed version satisfies a constraint only when one
@@ -281,6 +312,8 @@ array of human-readable strings, each prefixed with where the problem is:
   `Content-Security-Policy: sandbox`, immutable, `ETag "<sha256>-<path
   hash>"`. Members over 16 MiB get a `413`.
 * **Website:** no JavaScript; CSP `default-src 'none'; style-src 'self'`.
+  The stylesheet is served at `/static/style.css?v=<hash of its text>` for a
+  day, so a redesign is fetched at once.
   Forms carry a CSRF token (an HMAC of the session cookie) and cross-origin
   `Origin` headers are refused. The OAuth `state` is signed and bound to a
   nonce cookie scoped to `/auth`. On login, any other user row holding the

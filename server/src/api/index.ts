@@ -2,11 +2,12 @@
 
 import { Hono, type Context } from "hono";
 import type { AppEnv } from "../env";
-import { CACHE_CONTROL, ETAG, cached, ifNoneMatch, notModified, purge, store } from "../lib/cache";
-import { getRevision, getVersionRow, isOwner, loadPackage, ownerLogins, packageDocument, search, urls } from "../lib/db";
-import { ApiError, badRequest, errorResponse, forbidden, jsonResponse, notFound, now, today } from "../lib/http";
+import { CACHE_CONTROL, ETAG, cached, ifNoneMatch, notModified } from "../lib/cache";
+import { getPackageState, getVersionRow, isOwner, loadPackage, ownerLogins, packageDocument, search, urls } from "../lib/db";
+import { ApiError, badRequest, errorResponse, forbidden, jsonResponse, notFound, today } from "../lib/http";
 import { versionMetadata } from "../lib/metadata";
-import { requireUser } from "../lib/auth";
+import { bearerUser, requireUser } from "../lib/auth";
+import { addOwner, removeOwner, setYanked, versionResponse } from "../lib/packages";
 import { canonicalize, isValidId } from "../lib/version";
 import { publish } from "./publish";
 
@@ -41,12 +42,24 @@ function canonicalRedirect(c: C, version: string): Response | null {
   return new Response(null, { status: 301, headers: { Location: url.toString(), "Cache-Control": CACHE_CONTROL.version } });
 }
 
-function packageUrl(c: C, id: string): string {
-  return new URL(`/api/v1/packages/${id}`, c.req.url).toString();
+/**
+ * A pending package exists only for its owners and admins, identified by their bearer token;
+ * anyone else, including a bad token (no 401: that would reveal the id is taken), gets the
+ * same 404 as for an unknown id. Responses about it are never shared.
+ */
+async function requireViewer(c: C, id: string): Promise<void> {
+  const user = await bearerUser(c.env, c.executionCtx, c.req.raw).catch((e: unknown) => {
+    if (e instanceof ApiError && e.status === 401) return null;
+    throw e;
+  });
+  if (!user || (!user.admin && !(await isOwner(c.env.DB, id, user.userId)))) throw notFound(`no package \`${id}\``);
 }
 
-function versionUrl(c: C, id: string, version: string): string {
-  return new URL(`/api/v1/packages/${id}/versions/${version}`, c.req.url).toString();
+/** `res` with `Cache-Control: no-store`: a pending package's response, for its viewer only. */
+function unshared(res: Response): Response {
+  const out = new Response(res.body, res);
+  out.headers.set("Cache-Control", CACHE_CONTROL.noStore);
+  return out;
 }
 
 // --- Reads ----------------------------------------------------------------
@@ -56,27 +69,28 @@ api.get("/packages/:id", (c) => {
   return cached(c.req.raw, c.executionCtx, async () => {
     // A revalidation costs one indexed read of `revision`.
     if (c.req.header("If-None-Match")) {
-      const revision = await getRevision(c.env.DB, id);
-      if (revision === null) throw notFound(`no package \`${id}\``);
-      const etag = ETAG.package(id, revision);
-      if (ifNoneMatch(c.req.raw, etag)) return notModified(etag, CACHE_CONTROL.package);
+      const state = await getPackageState(c.env.DB, id);
+      if (state === null) throw notFound(`no package \`${id}\``);
+      const etag = ETAG.package(id, state.revision);
+      if (state.approved_at !== null && ifNoneMatch(c.req.raw, etag)) return notModified(etag, CACHE_CONTROL.package);
     }
     const data = await loadPackage(c.env.DB, id);
     if (!data) throw notFound(`no package \`${id}\``);
+    const pending = data.pkg.approved_at === null;
+    if (pending) await requireViewer(c, id);
     return jsonResponse(packageDocument(data, c.env), 200, {
       ETag: ETAG.package(id, data.pkg.revision),
-      "Cache-Control": CACHE_CONTROL.package,
+      "Cache-Control": pending ? CACHE_CONTROL.noStore : CACHE_CONTROL.package,
     });
   });
 });
 
-async function versionResponse(c: C, id: string, version: string): Promise<Response> {
+async function versionRead(c: C, id: string, version: string): Promise<Response> {
   const row = await getVersionRow(c.env.DB, id, version);
   if (!row) throw notFound(`no version \`${version}\` of \`${id}\``);
-  return jsonResponse(versionMetadata(row, urls(c.env)), 200, {
-    ETag: ETAG.version(row.sha256, row.yanked !== 0),
-    "Cache-Control": CACHE_CONTROL.version,
-  });
+  if (row.package_approved_at !== null) return versionResponse(c.env, row);
+  await requireViewer(c, id);
+  return unshared(versionResponse(c.env, row));
 }
 
 api.get("/packages/:id/versions/:version", (c) => {
@@ -84,7 +98,7 @@ api.get("/packages/:id/versions/:version", (c) => {
   const version = versionParam(c, id);
   const moved = canonicalRedirect(c, version);
   if (moved) return moved;
-  return cached(c.req.raw, c.executionCtx, () => versionResponse(c, id, version));
+  return cached(c.req.raw, c.executionCtx, () => versionRead(c, id, version));
 });
 
 api.get("/packages/:id/versions/:version/archive", (c) => {
@@ -96,21 +110,26 @@ api.get("/packages/:id/versions/:version/archive", (c) => {
     c.req.raw,
     c.executionCtx,
     async () => {
+      const state = await getPackageState(c.env.DB, id);
+      if (!state) throw notFound(`no version \`${version}\` of \`${id}\``);
+      const pending = state.approved_at === null;
+      if (pending) await requireViewer(c, id);
       const obj = await c.env.ARCHIVES.get(`archives/${id}/${version}.zip`);
       if (!obj) throw notFound(`no version \`${version}\` of \`${id}\``);
       const sha = obj.customMetadata?.sha256 ?? "";
       const etag = ETAG.archive(sha);
+      const cacheControl = pending ? CACHE_CONTROL.noStore : CACHE_CONTROL.archive;
       const headers: Record<string, string> = {
         "Content-Type": "application/zip",
         "Content-Length": String(obj.size),
         "Content-Disposition": `attachment; filename="${id}-${version}.zip"`,
         ETag: etag,
         "X-Fpkg-Sha256": sha,
-        "Cache-Control": CACHE_CONTROL.archive,
+        "Cache-Control": cacheControl,
       };
       if (ifNoneMatch(c.req.raw, etag)) {
         await obj.body.cancel();
-        return notModified(etag, CACHE_CONTROL.archive, { "X-Fpkg-Sha256": sha });
+        return notModified(etag, cacheControl, { "X-Fpkg-Sha256": sha });
       }
       return new Response(obj.body, { status: 200, headers });
     },
@@ -132,9 +151,10 @@ api.get("/packages/:id/versions/:version/archive", (c) => {
 
 api.get("/packages/:id/owners", async (c) => {
   const id = packageId(c);
-  const revision = await getRevision(c.env.DB, id);
-  if (revision === null) throw notFound(`no package \`${id}\``);
-  const etag = ETAG.package(id, revision);
+  const state = await getPackageState(c.env.DB, id);
+  if (state === null) throw notFound(`no package \`${id}\``);
+  if (state.approved_at === null) await requireViewer(c, id);
+  const etag = ETAG.package(id, state.revision);
   if (ifNoneMatch(c.req.raw, etag)) return notModified(etag, CACHE_CONTROL.revalidate);
   return jsonResponse({ id, owners: await ownerLogins(c.env.DB, id) }, 200, { ETag: etag, "Cache-Control": CACHE_CONTROL.revalidate });
 });
@@ -174,20 +194,8 @@ for (const [action, yanked] of [["yank", true], ["unyank", false]] as const) {
     const row = await getVersionRow(c.env.DB, id, version);
     if (!row) throw notFound(`no version \`${version}\` of \`${id}\``);
     if (!user.admin && !(await isOwner(c.env.DB, id, user.userId))) throw forbidden(`\`${user.login}\` is not an owner of \`${id}\``);
-    if ((row.yanked !== 0) !== yanked) {
-      const at = now();
-      await c.env.DB.batch([
-        c.env.DB.prepare("UPDATE versions SET yanked = ? WHERE package_id = ? AND version = ?").bind(yanked ? 1 : 0, id, version),
-        c.env.DB.prepare("UPDATE packages SET revision = revision + 1, updated_at = ? WHERE id = ?").bind(at, id),
-      ]);
-      // This colo gets the new version body at once; others age out.
-      const fresh = await versionResponse(c, id, version);
-      c.executionCtx.waitUntil(
-        Promise.all([store(versionUrl(c, id, version), fresh.clone()), purge(packageUrl(c, id))]).catch((e) => console.error("cache update failed", e)),
-      );
-      return jsonResponse(await fresh.json());
-    }
-    return jsonResponse(versionMetadata(row, urls(c.env)));
+    const fresh = await setYanked(c.env, c.executionCtx, c.req.url, row, yanked);
+    return jsonResponse(versionMetadata(fresh, urls(c.env)));
   });
 }
 
@@ -195,46 +203,19 @@ api.put("/packages/:id/owners/:login", async (c) => {
   const user = await requireUser(c.env, c.executionCtx, c.req.raw);
   const id = packageId(c);
   const login = c.req.param("login");
-  if ((await getRevision(c.env.DB, id)) === null) throw notFound(`no package \`${id}\``);
+  if ((await getPackageState(c.env.DB, id)) === null) throw notFound(`no package \`${id}\``);
   if (!user.admin && !(await isOwner(c.env.DB, id, user.userId))) throw forbidden(`\`${user.login}\` is not an owner of \`${id}\``);
-  const target = await c.env.DB.prepare("SELECT id, login FROM users WHERE lower(login) = lower(?) ORDER BY id DESC LIMIT 1")
-    .bind(login)
-    .first<{ id: number; login: string }>();
-  if (!target) throw new ApiError(404, "user_not_found", `no user \`${login}\`: they need to log in to the registry once first`);
-  const at = now();
-  const [inserted] = await c.env.DB.batch([
-    c.env.DB.prepare("INSERT OR IGNORE INTO owners (package_id, user_id, added_at) VALUES (?, ?, ?)").bind(id, target.id, at),
-    c.env.DB.prepare(
-      "UPDATE packages SET revision = revision + 1, updated_at = ? WHERE id = ? AND (SELECT changes()) > 0",
-    ).bind(at, id),
-  ]);
-  if ((inserted!.meta.changes ?? 0) > 0) c.executionCtx.waitUntil(purge(packageUrl(c, id)).catch(() => {}));
-  return jsonResponse({ id, owners: await ownerLogins(c.env.DB, id) });
+  const { owners } = await addOwner(c.env, c.executionCtx, c.req.url, id, login);
+  return jsonResponse({ id, owners });
 });
 
 api.delete("/packages/:id/owners/:login", async (c) => {
   const user = await requireUser(c.env, c.executionCtx, c.req.raw);
   const id = packageId(c);
   const login = c.req.param("login");
-  if ((await getRevision(c.env.DB, id)) === null) throw notFound(`no package \`${id}\``);
+  if ((await getPackageState(c.env.DB, id)) === null) throw notFound(`no package \`${id}\``);
   if (!(await isOwner(c.env.DB, id, user.userId))) throw forbidden(`\`${user.login}\` is not an owner of \`${id}\``);
-  const target = await c.env.DB.prepare(
-    "SELECT u.id FROM owners o JOIN users u ON u.id = o.user_id WHERE o.package_id = ? AND lower(u.login) = lower(?)",
-  )
-    .bind(id, login)
-    .first<{ id: number }>();
-  if (!target) throw new ApiError(404, "not_found", `\`${login}\` is not an owner of \`${id}\``);
-  const at = now();
-  // The count guard keeps the last owner even under concurrent removals.
-  const [deleted] = await c.env.DB.batch([
-    c.env.DB.prepare(
-      "DELETE FROM owners WHERE package_id = ?1 AND user_id = ?2 AND (SELECT COUNT(*) FROM owners WHERE package_id = ?1) > 1",
-    ).bind(id, target.id),
-    c.env.DB.prepare("UPDATE packages SET revision = revision + 1, updated_at = ? WHERE id = ? AND (SELECT changes()) > 0").bind(at, id),
-  ]);
-  if ((deleted!.meta.changes ?? 0) === 0) throw new ApiError(409, "last_owner", `\`${login}\` is the last owner of \`${id}\` and cannot be removed`);
-  c.executionCtx.waitUntil(purge(packageUrl(c, id)).catch(() => {}));
-  return jsonResponse({ id, owners: await ownerLogins(c.env.DB, id) });
+  return jsonResponse({ id, owners: await removeOwner(c.env, c.executionCtx, c.req.url, id, login) });
 });
 
 // --- Errors ---------------------------------------------------------------

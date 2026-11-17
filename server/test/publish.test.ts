@@ -28,6 +28,9 @@ async function publish(token: string, id: string, version: string, extra: Record
 
 const revision = async (id: string) => (await env.DB.prepare("SELECT revision FROM packages WHERE id = ?").bind(id).first<{ revision: number }>())?.revision;
 
+/** Makes a package public without a revision bump, as the migration did for packages older than the approval gate. */
+const approve = async (id: string) => env.DB.prepare("UPDATE packages SET approved_at = created_at WHERE id = ? AND approved_at IS NULL").bind(id).run();
+
 describe("publish", () => {
   it("checks more dependencies than D1 binds parameters (101)", async () => {
     const u = await seedUser(`deps${run}`);
@@ -44,7 +47,7 @@ describe("publish", () => {
     const owner = await seedUser(`own${run}`);
     const other = await seedUser(`oth${run}`);
     const id = `p_rev_${run}`;
-    expect((await publish(owner.token, id, "1.0.0")).status).toBe(201);
+    expect((await publish(owner.token, id, "1.0.0")).status).toBe(202);
     expect(await revision(id)).toBe(1);
     const args = { id, version: "2.0.0", sortKey: "x", metadata: "{}", sha256: "00", size: 1, at: "2026-11-01T00:00:00Z" };
     expect(await commitVersion(env.DB, { ...args, userId: other.id })).toBe(false);
@@ -97,7 +100,8 @@ describe("pre-releases", () => {
   it("prefers the newest release for latest, falls back to a pre-release, and keeps them out of plain constraints", async () => {
     const u = await seedUser(`pre${run}`);
     const id = `p_pre_${run}`;
-    expect((await publish(u.token, id, "1.9.0")).status).toBe(201);
+    expect((await publish(u.token, id, "1.9.0")).status).toBe(202);
+    await approve(id);
     expect((await publish(u.token, id, "2.0.0-beta")).status).toBe(201);
 
     const doc = (await (await SELF.fetch(`${API}/packages/${id}`)).json()) as { latest: string; versions: Record<string, unknown> };
@@ -110,7 +114,8 @@ describe("pre-releases", () => {
 
     // Only a pre-release: it is the latest.
     const only = `p_only_${run}`;
-    expect((await publish(u.token, only, "1.0.0-rc.1")).status).toBe(201);
+    expect((await publish(u.token, only, "1.0.0-rc.1")).status).toBe(202);
+    await approve(only);
     expect(((await (await SELF.fetch(`${API}/packages/${only}`)).json()) as { latest: string }).latest).toBe("1.0.0-rc.1");
     res = await SELF.fetch(`https://docs.fluxpkg.dev/${only}/`, { redirect: "manual" });
     expect(res.headers.get("Location")).toBe(`https://docs.fluxpkg.dev/${only}/1.0.0-rc.1/`);
@@ -121,6 +126,6 @@ describe("pre-releases", () => {
     expect(res.status).toBe(422);
     expect(((await res.json()) as { error: { details: string[] } }).error.details.join()).toMatch(/no published version satisfies it \(have 1.0.0-rc.1\)/);
     res = await publish(u.token, user, "1.0.0", { dependencies: [{ id: only, constraint: ">= 1.0.0-beta" }] });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
   });
 });

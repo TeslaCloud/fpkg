@@ -57,6 +57,11 @@ async function publish(token: string | null, id: string, version: string, archiv
 
 const auth = (token: string) => ({ headers: { Authorization: `Bearer ${token}` } });
 
+/** Makes a package public the way the migration did for packages older than the approval gate: no revision bump. */
+async function approve(id: string): Promise<void> {
+  await env.DB.prepare("UPDATE packages SET approved_at = created_at WHERE id = ? AND approved_at IS NULL").bind(id).run();
+}
+
 describe("the registry API", () => {
   it("publishes, serves, revalidates, yanks and manages owners", async () => {
     const id = `e2e_${run}`;
@@ -95,9 +100,10 @@ describe("the registry API", () => {
     expect(res.status).toBe(422);
     expect(((await res.json()) as typeof body).error.details.join()).toMatch(new RegExp(`dependency \`${dep}\`: not on the registry`));
 
-    // Publish with allow_missing_dependencies, then the conflict.
+    // Publish with allow_missing_dependencies (202: a non-admin's new package is pending), then the conflict.
     res = await publish(luna.token, id, "1.0.0", archive, { ...withDep, allow_missing_dependencies: true });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
+    await approve(id);
     const published = (await res.json()) as Record<string, any>;
     expect(published).toMatchObject({
       id,
@@ -124,7 +130,7 @@ describe("the registry API", () => {
     expect(res.headers.get("Cache-Control")).toBe("public, max-age=60, stale-while-revalidate=600");
     expect(res.headers.get("ETag")).toBe(`"${id}-1"`);
     const doc = (await res.json()) as Record<string, any>;
-    expect(doc).toMatchObject({ id, revision: 1, owners: [`luna${run}`], latest: "1.0.0" });
+    expect(doc).toMatchObject({ id, revision: 1, status: "approved", owners: [`luna${run}`], latest: "1.0.0" });
     expect(Object.keys(doc.versions)).toEqual(["1.0.0"]);
     res = await SELF.fetch(`${API}/packages/${id}`, { headers: { "If-None-Match": `"${id}-1"` } });
     expect(res.status).toBe(304);
@@ -210,11 +216,15 @@ describe("the registry API", () => {
     expect(await revisionNow()).toBe(7);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("last_owner");
 
-    // The now satisfied dependency check.
-    expect((await publish(luna.token, dep, "1.2.0", packageZip(dep, "1.2.0"), meta(dep, "1.2.0"))).status).toBe(201);
+    // The now satisfied dependency check (once the dependency is approved).
+    expect((await publish(luna.token, dep, "1.2.0", packageZip(dep, "1.2.0"), meta(dep, "1.2.0"))).status).toBe(202);
     const dependent = `e2e_user_${run}`;
     const withSatisfiedDep = meta(dependent, "0.1.0", { dependencies: [{ id: dep, constraint: "~> 1.0" }] });
-    expect((await publish(luna.token, dependent, "0.1.0", packageZip(dependent, "0.1.0"), withSatisfiedDep)).status).toBe(201);
+    res = await publish(luna.token, dependent, "0.1.0", packageZip(dependent, "0.1.0"), withSatisfiedDep);
+    expect(((await res.json()) as typeof body).error.details.join()).toMatch(new RegExp(`dependency \`${dep}\`: not on the registry`));
+    await approve(dep);
+    expect((await publish(luna.token, dependent, "0.1.0", packageZip(dependent, "0.1.0"), withSatisfiedDep)).status).toBe(202);
+    await approve(dependent);
     const unsatisfied = meta(dependent, "0.2.0", { dependencies: [{ id: dep, constraint: ">= 2.0" }] });
     res = await publish(luna.token, dependent, "0.2.0", packageZip(dependent, "0.2.0"), unsatisfied);
     expect(((await res.json()) as typeof body).error.details.join()).toMatch(/no published version satisfies it \(have 1.2.0\)/);
@@ -260,7 +270,8 @@ describe("docs", () => {
     const id = `e2e_docs_${run}`;
     const archive = packageZip(id, "1.0.0", "Docs Package");
     const sha = await sha256Hex(archive);
-    expect((await publish(user.token, id, "1.0.0", archive, { ...meta(id, "1.0.0"), name: "Docs Package" })).status).toBe(201);
+    expect((await publish(user.token, id, "1.0.0", archive, { ...meta(id, "1.0.0"), name: "Docs Package" })).status).toBe(202);
+    await approve(id);
 
     // The queue consumer, at its own FDOC_VERSION prefix.
     const queued = { ...env, FDOC_VERSION: `q${run}` };
@@ -382,7 +393,8 @@ describe("the website", () => {
   it("renders pages with a strict CSP and manages tokens", async () => {
     const user = await seedUser(`web${run}`);
     const id = `e2e_web_${run}`;
-    expect((await publish(user.token, id, "1.0.0", packageZip(id))).status).toBe(201);
+    expect((await publish(user.token, id, "1.0.0", packageZip(id))).status).toBe(202);
+    await approve(id);
 
     let res = await SELF.fetch(`${SITE}/packages/${id}`);
     expect(res.status).toBe(200);
@@ -391,7 +403,9 @@ describe("the website", () => {
     expect(csp).not.toContain("script-src");
     const page = await res.text();
     expect(page).not.toMatch(/<script/i);
-    expect(page).toContain(`s.depends &#39;${id}&#39;, &#39;~&gt; 1.0&#39;`);
+    // The constraint form needs parentheses: a Lua call statement cannot take a second argument otherwise.
+    expect(page).toContain(`s.depends(&#39;${id}&#39;, &#39;~&gt; 1.0&#39;)`);
+    expect(page).toContain(`/static/style.css?v=`);
     expect(res.headers.get("Cache-Control")).toBe("public, max-age=60");
     expect((await SELF.fetch(`${SITE}/`)).status).toBe(200);
     expect(await (await SELF.fetch(`${SITE}/search?q=${id}`)).text()).toContain(`/packages/${id}`);

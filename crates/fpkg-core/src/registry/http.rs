@@ -6,8 +6,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use super::{
-    API_VERSION, ApiError, Conditional, Identity, NetOptions, PER_PAGE, PackageDoc, Registry, RegistryError, Result,
-    SearchPage, Token, VersionMeta,
+    API_VERSION, ApiError, Conditional, Identity, NetOptions, PER_PAGE, PackageDoc, Published, Registry, RegistryError,
+    Result, SearchPage, Token, VersionMeta,
 };
 use crate::PackageId;
 use crate::version::Version;
@@ -318,6 +318,18 @@ enum OwnerEntry {
     Object { login: String },
 }
 
+impl HttpRegistry {
+    /// `GET /packages/{id}/versions/{v}`, with a token when the caller has one
+    /// (a pending package answers only its owners and admins).
+    fn version_as(&self, id: &PackageId, v: &Version, auth: Option<&Token>) -> Result<Option<VersionMeta>> {
+        let r = self.get(&["packages", id.as_str(), "versions", &v.to_string()], &[], auth)?;
+        if r.status == 404 {
+            return Ok(None);
+        }
+        self.json(&ok_or_error(r)?).map(Some)
+    }
+}
+
 impl Registry for HttpRegistry {
     fn package(&self, id: &PackageId) -> Result<Option<PackageDoc>> {
         match self.package_conditional(id, None)? {
@@ -345,11 +357,7 @@ impl Registry for HttpRegistry {
     }
 
     fn version(&self, id: &PackageId, v: &Version) -> Result<Option<VersionMeta>> {
-        let r = self.get(&["packages", id.as_str(), "versions", &v.to_string()], &[], None)?;
-        if r.status == 404 {
-            return Ok(None);
-        }
-        self.json(&ok_or_error(r)?).map(Some)
+        self.version_as(id, v, None)
     }
 
     fn archive(&self, id: &PackageId, v: &Version) -> Result<Vec<u8>> {
@@ -363,7 +371,7 @@ impl Registry for HttpRegistry {
         Ok(r.body)
     }
 
-    fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<VersionMeta> {
+    fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<Published> {
         let json = serde_json::to_vec(&meta.for_publish()).map_err(|e| RegistryError::Invalid(e.to_string()))?;
         let body = multipart(&json, archive, &format!("{}-{}.zip", meta.id, meta.version));
         let u = self.endpoint(&["packages", &meta.id, "versions", &meta.version]);
@@ -371,15 +379,25 @@ impl Registry for HttpRegistry {
         if r.status == 409 && r.retried > 0 {
             // A retried upload whose first attempt reached the server: if the
             // version now holds these very bytes, that attempt published it.
+            // Read back with the token: a new package may be pending, which
+            // only its owners can see.
             let sha = crate::sha256_hex(archive);
             if let (Ok(id), Ok(v)) = (meta.package_id(), meta.parsed_version())
-                && let Ok(Some(existing)) = self.version(&id, &v)
+                && let Ok(Some(existing)) = self.version_as(&id, &v, Some(auth))
                 && existing.dist.as_ref().is_some_and(|d| d.sha256.eq_ignore_ascii_case(&sha))
             {
-                return Ok(existing);
+                let pending = self
+                    .get(&["packages", id.as_str()], &[], Some(auth))
+                    .ok()
+                    .filter(|r| r.status == 200)
+                    .and_then(|r| self.json::<PackageDoc>(&r).ok())
+                    .is_some_and(|doc| doc.status.as_deref() == Some("pending"));
+                return Ok(Published { meta: existing, pending });
             }
         }
-        self.json(&ok_or_error(r)?)
+        // 202: stored, but the package waits for an admin's approval.
+        let pending = r.status == 202;
+        Ok(Published { meta: self.json(&ok_or_error(r)?)?, pending })
     }
 
     fn yank(&self, id: &PackageId, v: &Version, yanked: bool, auth: &Token) -> Result<()> {

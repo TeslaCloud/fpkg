@@ -107,7 +107,8 @@ export type Generation =
  */
 export async function generateDocs(env: Env, id: string, version: string, maxSourceBytes: number): Promise<Generation> {
   const row = await getVersionRow(env.DB, id, version);
-  if (!row) return { status: "missing" };
+  // A pending package has no public docs; its job is queued when it is approved.
+  if (!row || row.package_approved_at === null) return { status: "missing" };
   const meta = JSON.parse(row.metadata) as StoredMetadata;
   const input = await encodeInput(env, id, version, meta.name, maxSourceBytes);
   if ("tooLarge" in input) return { status: "too_large", bytes: input.tooLarge };

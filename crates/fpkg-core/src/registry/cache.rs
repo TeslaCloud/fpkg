@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Conditional, Identity, PackageDoc, Registry, RegistryError, Result, SearchPage, Token, VersionMeta};
+use super::{Conditional, Identity, PackageDoc, Published, Registry, RegistryError, Result, SearchPage, Token, VersionMeta};
 use crate::PackageId;
 use crate::lockfile::write_atomic;
 use crate::version::Version;
@@ -209,7 +209,7 @@ impl<R: Registry> Registry for CachedRegistry<R> {
         }
     }
 
-    fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<VersionMeta> {
+    fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<Published> {
         self.needs_network("publish")?;
         let r = self.inner.publish(meta, archive, auth);
         self.forget(&meta.id);

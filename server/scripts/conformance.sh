@@ -50,6 +50,8 @@ fi
 
 npx wrangler d1 migrations apply DB --local --persist-to "$state" >/dev/null
 
+# `conformance` is an admin (ADMIN_LOGINS below): new packages need an admin's approval, and the
+# suite reads back what it publishes.
 token="$(node -e 'process.stdout.write("fpk_" + require("crypto").randomBytes(32).toString("base64url"))')"
 hash="$(node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$token")"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -64,7 +66,7 @@ npx wrangler dev --local --ip 127.0.0.1 --port "$port" --persist-to "$state" \
   --var "SITE_URL:http://127.0.0.1:$port" \
   --var "DOCS_URL:http://127.0.0.1:$port/_docs" \
   --var "SESSION_SECRET:conformance-$(node -e 'process.stdout.write(require("crypto").randomBytes(16).toString("hex"))')" \
-  --var "ADMIN_LOGINS:conformance-admin" \
+  --var "ADMIN_LOGINS:conformance" \
   >"$log" 2>&1 &
 pid=$!
 set +m

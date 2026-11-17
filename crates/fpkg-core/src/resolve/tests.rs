@@ -17,6 +17,8 @@ impl Mem {
             owners: vec!["luna".into()],
             latest: None,
             versions: BTreeMap::new(),
+
+            status: None,
         });
         doc.versions.insert(
             version.to_string(),
@@ -56,7 +58,7 @@ impl Registry for Mem {
     fn archive(&self, _: &PackageId, _: &Version) -> crate::registry::Result<Vec<u8>> {
         unimplemented!("not used by the resolver")
     }
-    fn publish(&self, _: &VersionMeta, _: &[u8], _: &Token) -> crate::registry::Result<VersionMeta> {
+    fn publish(&self, _: &VersionMeta, _: &[u8], _: &Token) -> crate::registry::Result<crate::registry::Published> {
         unimplemented!("not used by the resolver")
     }
     fn yank(&self, _: &PackageId, _: &Version, _: bool, _: &Token) -> crate::registry::Result<()> {

@@ -10,7 +10,7 @@ use fpkg_core::archive::{self, Packed};
 use fpkg_core::auth::Credentials;
 use fpkg_core::install::load;
 use fpkg_core::lockfile::{Lockfile, Source};
-use fpkg_core::registry::{self, FileRegistry, Registry, Token, VersionMeta};
+use fpkg_core::registry::{self, FileRegistry, Published, Registry, Token, VersionMeta};
 use fpkg_core::resolve::topological;
 use fpkg_core::spec::{DepKind, Manifest};
 use fpkg_core::{PackageId, Version};
@@ -179,17 +179,29 @@ pub fn publish(ctx: &Ctx, id: Option<String>, o: PublishOpts) -> Result<()> {
     let mut done = Vec::new();
     for p in &plans {
         ctx.out.status("Uploading", &format!("{} {}", p.meta.id, p.meta.version));
-        let published = reg.publish(&p.meta, &p.packed.bytes, &token).with_context(|| format!("publishing {} {}", p.meta.id, p.meta.version))?;
+        let Published { meta: published, pending } =
+            reg.publish(&p.meta, &p.packed.bytes, &token).with_context(|| format!("publishing {} {}", p.meta.id, p.meta.version))?;
         let page = registry::package_page(&url, &published.id);
         let docs = published.docs.clone().or_else(|| registry::docs_url(&url, &published.id, &published.version));
-        ctx.out.status("Published", &format!("{} {}", published.id, published.version));
+        if pending {
+            // A new package by a non-admin: stored, not yet public.
+            ctx.out.status("Submitted", &format!("{} {} (awaiting approval)", published.id, published.version));
+            ctx.out.note(&format!(
+                "{} is a new package, so a registry admin reviews it first; until then only its owners see it on {url}, nothing can depend on it, and its documentation is not generated",
+                published.id
+            ));
+        } else {
+            ctx.out.status("Published", &format!("{} {}", published.id, published.version));
+        }
         if !ctx.out.json {
             println!("{page}");
-            if let Some(d) = &docs {
+            if let Some(d) = &docs
+                && !pending
+            {
                 println!("{d}");
             }
         }
-        done.push(json!({ "id": published.id, "version": published.version, "url": page, "docs": docs, "sha256": p.packed.sha256 }));
+        done.push(json!({ "id": published.id, "version": published.version, "url": page, "docs": docs, "sha256": p.packed.sha256, "pending": pending }));
     }
     if ctx.out.json {
         ctx.out.json(&json!({ "published": done, "dry_run": false }));

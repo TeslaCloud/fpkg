@@ -110,7 +110,9 @@ fpkg add sfs                 # writes s.depends('sfs', '~> 7.0'), locks, install
 fpkg install --locked        # fails with exit 3 instead of rewriting a stale lock
 fpkg verify                  # exit 4 if an installed package differs from the lock
 
-# Publishing (versions must be written X.Y.Z)
+# Publishing (versions must be written X.Y.Z). A package new to the registry is held
+# for a registry admin's approval: fpkg says "Submitted", and until it is approved only
+# its owners see it and nothing can depend on it. Later versions publish directly.
 fpkg login
 fpkg publish cable
 fpkg publish --all --yes     # every workspace package not yet on the registry, in dependency order

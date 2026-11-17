@@ -142,6 +142,10 @@ fn scenario(t: &Target) {
 
     // Publish, then 409 on republish.
     let published = r.publish(&sfs.meta, &sfs.bytes, &t.token).expect("publish sfs 7.0.9");
+    // A registry that holds new packages for approval answers 202; the rest of the scenario
+    // reads the package back, so the token must belong to an admin there.
+    assert!(!published.pending, "publish sfs 7.0.9: the package awaits approval; run the suite with an admin's token");
+    let published = published.meta;
     assert_eq!(published.id, sfs_id);
     assert_eq!(published.version, "7.0.9");
     assert_eq!(published.name, "Srlion's Fast Serializer");
@@ -153,7 +157,7 @@ fn scenario(t: &Target) {
     expect_status(r.publish(&sfs.meta, &sfs.bytes, &t.token), &[409], "republish of sfs 7.0.9");
 
     let mut cable_meta = cable.meta.clone();
-    let published = r.publish(&cable_meta, &cable.bytes, &t.token).expect("publish cable 1.0.0");
+    let published = r.publish(&cable_meta, &cable.bytes, &t.token).expect("publish cable 1.0.0").meta;
     assert_eq!(published.dependencies.len(), 1);
     assert_eq!(published.dependencies[0].id, sfs_id);
     assert_eq!(published.dependencies[0].constraint, "~> 7.0");

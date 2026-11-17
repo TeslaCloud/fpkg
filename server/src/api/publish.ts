@@ -4,9 +4,10 @@ import type { Context } from "hono";
 import type { AppEnv } from "../env";
 import { requireUser, sha256Hex } from "../lib/auth";
 import { CACHE_CONTROL, purge } from "../lib/cache";
-import { getVersionRow, isOwner, urls } from "../lib/db";
+import { getPackageState, getVersionRow, isOwner, urls } from "../lib/db";
 import { ApiError, badRequest, forbidden, invalid, jsonResponse, now } from "../lib/http";
 import { type StoredMetadata, validateMetadata, versionMetadata } from "../lib/metadata";
+import { apiPackageUrl, apiVersionUrl } from "../lib/packages";
 import { scanSpec } from "../lib/specscan";
 import { canonicalize, isValidId, parseConstraint, parseVersion, satisfies, sortKey, formatVersion, ID_RE } from "../lib/version";
 import { LIMITS, ZipError, validateArchive } from "../lib/zip";
@@ -22,6 +23,9 @@ const BIND_CHUNK = 90;
 
 /** Publishes per user per hour before `429`. */
 export const PUBLISH_RATE = { count: 120, windowSeconds: 3600 };
+
+/** New packages a non-admin may have created and still awaiting approval before `403 pending_limit`. */
+export const MAX_PENDING_PER_USER = 10;
 
 /** An R2 object older than this without a versions row is a leftover of a failed publish. */
 const ORPHAN_AGE_MS = 10 * 60 * 1000;
@@ -45,11 +49,12 @@ export async function publish(c: C): Promise<Response> {
     grammar.push(`version: \`${version}\` must be written canonically, as \`${formatVersion(parsed)}\` (three components)`);
   if (grammar.length > 0) throw invalid("the package id or version is invalid", grammar);
 
-  // Rate limit, then existence (409) and ownership.
+  // Rate limit, then existence (409), ownership, and the cap on a non-admin's pending packages.
   await checkRate(c, user.userId);
   if (await getVersionRow(db, id, version)) throw new ApiError(409, "version_exists", `${id} ${version} is already published; versions are immutable`);
-  const existing = await db.prepare("SELECT 1 AS x FROM packages WHERE id = ?").bind(id).first();
+  const existing = await getPackageState(db, id);
   if (existing && !(await isOwner(db, id, user.userId))) throw forbidden(`\`${id}\` belongs to other users; \`${user.login}\` is not an owner`);
+  if (!existing && !user.admin) await checkPendingLimit(db, user.userId);
 
   // The body is read into memory once; parts are views into it.
   const length = Number(c.req.header("Content-Length") ?? "0");
@@ -123,6 +128,8 @@ export async function publish(c: C): Promise<Response> {
       size: archive.length,
       userId: user.userId,
       at: now(),
+      // An admin's new package is public at once; anyone else's waits for an admin.
+      approvedBy: user.admin ? user.userId : null,
     });
   } catch (e) {
     // A concurrent publish won the insert; its row describes the R2 object, so it stays.
@@ -139,17 +146,20 @@ export async function publish(c: C): Promise<Response> {
   // A concurrent rollback may have deleted the identical object; put it back.
   await ensureArchive(env.ARCHIVES, key, archive, putOptions);
 
-  try {
-    await enqueueDocs(env, id, version);
-  } catch (e) {
-    // Docs are generated on first request anyway.
-    console.error(`could not enqueue docs for ${id} ${version}`, e);
+  const row = (await getVersionRow(db, id, version))!;
+  const pending = row.package_approved_at === null;
+  if (!pending) {
+    // A pending package's docs are queued when it is approved.
+    try {
+      await enqueueDocs(env, id, version);
+    } catch (e) {
+      // Docs are generated on first request anyway.
+      console.error(`could not enqueue docs for ${id} ${version}`, e);
+    }
   }
-  c.executionCtx.waitUntil(purge(new URL(`/api/v1/packages/${id}`, c.req.url).toString()).catch(() => {}));
-  const row = await getVersionRow(db, id, version);
-  return jsonResponse(versionMetadata(row!, urls(env)), 201, {
-    Location: new URL(`/api/v1/packages/${id}/versions/${version}`, c.req.url).toString(),
-  });
+  c.executionCtx.waitUntil(purge(apiPackageUrl(c.req.url, id)).catch(() => {}));
+  // 202: stored, but not public until an admin approves the package.
+  return jsonResponse(versionMetadata(row, urls(env)), pending ? 202 : 201, { Location: apiVersionUrl(c.req.url, id, version) });
 }
 
 /** The spec's `version` literal must canonicalise to the URL's version; a `name` literal must equal `metadataName` (null skips). */
@@ -182,6 +192,7 @@ export function checkSpec(spec: string, id: string, version: string, metadataNam
   return out;
 }
 
+/** Only approved packages' versions satisfy a dependency, so nothing can depend on what the public cannot fetch. */
 async function checkDependencies(db: D1Database, metadata: StoredMetadata): Promise<string[]> {
   const ids = metadata.dependencies.map((d) => d.id);
   // D1 binds at most 100 parameters per statement.
@@ -189,7 +200,12 @@ async function checkDependencies(db: D1Database, metadata: StoredMetadata): Prom
   for (let i = 0; i < ids.length; i += BIND_CHUNK) {
     const chunk = ids.slice(i, i + BIND_CHUNK);
     statements.push(
-      db.prepare(`SELECT package_id, version FROM versions WHERE yanked = 0 AND package_id IN (${chunk.map(() => "?").join(", ")})`).bind(...chunk),
+      db
+        .prepare(
+          `SELECT v.package_id, v.version FROM versions v JOIN packages p ON p.id = v.package_id
+             WHERE v.yanked = 0 AND p.approved_at IS NOT NULL AND v.package_id IN (${chunk.map(() => "?").join(", ")})`,
+        )
+        .bind(...chunk),
     );
   }
   const results = await db.batch<{ package_id: string; version: string }>(statements);
@@ -215,18 +231,24 @@ export interface CommitArgs {
   size: number;
   userId: number;
   at: string;
+  /** The admin a new package is approved by at once; null leaves it pending. Existing packages are unaffected. */
+  approvedBy?: number | null;
 }
 
 /**
- * The D1 half of a publish, one transaction: create the package and first owner if new, insert the
- * version guarded by ownership (racing first publishes cannot both land), and bump the revision only
- * if it landed. Returns whether it did; throws if the version exists.
+ * The D1 half of a publish, one transaction: create the package (approved or pending) and first
+ * owner if new, insert the version guarded by ownership (racing first publishes cannot both land),
+ * and bump the revision only if it landed. Returns whether it did; throws if the version exists.
  */
 export async function commitVersion(db: D1Database, a: CommitArgs): Promise<boolean> {
+  const approvedBy = a.approvedBy ?? null;
   const [, , insert] = await db.batch([
     db
-      .prepare("INSERT INTO packages (id, revision, created_at, updated_at) VALUES (?1, 0, ?2, ?2) ON CONFLICT (id) DO NOTHING")
-      .bind(a.id, a.at),
+      .prepare(
+        `INSERT INTO packages (id, revision, created_at, updated_at, approved_at, approved_by, created_by)
+           VALUES (?1, 0, ?2, ?2, CASE WHEN ?3 IS NULL THEN NULL ELSE ?2 END, ?3, ?4) ON CONFLICT (id) DO NOTHING`,
+      )
+      .bind(a.id, a.at, approvedBy, a.userId),
     db
       .prepare(
         `INSERT OR IGNORE INTO owners (package_id, user_id, added_at)
@@ -306,6 +328,18 @@ export async function rollbackArchive(
 export async function ensureArchive(bucket: R2Bucket, key: string, archive: Uint8Array, options: R2PutOptions): Promise<void> {
   const head = await bucket.head(key);
   if (head?.customMetadata?.sha256 !== options.customMetadata!.sha256) await bucket.put(key, archive, options);
+}
+
+/**
+ * A non-admin may have at most MAX_PENDING_PER_USER packages they created awaiting approval.
+ * Counted by creator, not owner: owners can be added and removed, which must neither evade
+ * the cap nor let one user fill another's. Best effort under concurrent first publishes.
+ */
+async function checkPendingLimit(db: D1Database, userId: number): Promise<void> {
+  const r = await db.prepare("SELECT COUNT(*) AS n FROM packages WHERE created_by = ? AND approved_at IS NULL").bind(userId).first<{ n: number }>();
+  if (r && r.n >= MAX_PENDING_PER_USER) {
+    throw new ApiError(403, "pending_limit", `you have ${MAX_PENDING_PER_USER} packages awaiting approval; wait for an admin to review them before publishing new ones`);
+  }
 }
 
 async function checkRate(c: C, userId: number): Promise<void> {

@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    ApiError, Conditional, DepMeta, Dist, Identity, PER_PAGE, PackageDoc, Registry, RegistryError, Result, SearchHit,
-    SearchPage, Token, VersionMeta, literals,
+    ApiError, Conditional, DepMeta, Dist, Identity, PER_PAGE, PackageDoc, Published, Registry, RegistryError, Result,
+    SearchHit, SearchPage, Token, VersionMeta, literals,
 };
 use crate::PackageId;
 use crate::lockfile::write_atomic;
@@ -116,6 +116,8 @@ impl FileRegistry {
             owners: owners.to_vec(),
             latest: None,
             versions: Default::default(),
+
+            status: None,
         });
         doc.versions.insert(m.version.clone(), m);
         doc.revision += 1;
@@ -240,7 +242,7 @@ impl Registry for FileRegistry {
         }
     }
 
-    fn publish(&self, meta: &VersionMeta, archive: &[u8], _auth: &Token) -> Result<VersionMeta> {
+    fn publish(&self, meta: &VersionMeta, archive: &[u8], _auth: &Token) -> Result<Published> {
         if archive.len() as u64 > crate::archive::MAX_COMPRESSED {
             return Err(RegistryError::api(413, "too_large", "the archive is larger than 64 MiB"));
         }
@@ -273,11 +275,14 @@ impl Registry for FileRegistry {
             owners: vec![self.login.clone()],
             latest: None,
             versions: Default::default(),
+
+            status: None,
         });
         doc.versions.insert(m.version.clone(), m.clone());
         doc.revision += 1;
         self.write_doc(&mut doc)?;
-        Ok(m)
+        // A file registry has no admins: nothing waits for approval.
+        Ok(Published { meta: m, pending: false })
     }
 
     fn yank(&self, id: &PackageId, v: &Version, yanked: bool, _auth: &Token) -> Result<()> {
