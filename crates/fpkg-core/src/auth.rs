@@ -37,25 +37,41 @@ pub struct Credentials {
 impl Credentials {
     pub fn load(path: &Path) -> Result<Credentials, AuthError> {
         match std::fs::read_to_string(path) {
-            Ok(s) => toml::from_str(&s).map_err(|e| AuthError::File { path: path.display().to_string(), message: e.to_string() }),
+            Ok(s) => toml::from_str(&s).map_err(|e| AuthError::File {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
-            Err(e) => Err(AuthError::File { path: path.display().to_string(), message: e.to_string() }),
+            Err(e) => Err(AuthError::File {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            }),
         }
     }
 
     /// Writes the file with mode 0600 (created so, never widened).
     pub fn save(&self, path: &Path) -> Result<(), AuthError> {
-        let err = |e: std::io::Error| AuthError::File { path: path.display().to_string(), message: e.to_string() };
+        let err = |e: std::io::Error| AuthError::File {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(err)?;
         }
-        let text = toml::to_string(self).map_err(|e| AuthError::File { path: path.display().to_string(), message: e.to_string() })?;
+        let text = toml::to_string(self).map_err(|e| AuthError::File {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
         let dir = path.parent().unwrap_or(Path::new("."));
-        let mut tmp = tempfile::Builder::new().prefix(".credentials").tempfile_in(dir).map_err(err)?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".credentials")
+            .tempfile_in(dir)
+            .map_err(err)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600)).map_err(err)?;
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))
+                .map_err(err)?;
         }
         std::io::Write::write_all(&mut tmp, text.as_bytes()).map_err(err)?;
         tmp.persist(path).map_err(|e| err(e.error))?;
@@ -67,12 +83,20 @@ impl Credentials {
     }
 
     pub fn set(&mut self, registry: &str, token: &Token, user: Option<String>) {
-        self.registries.insert(normalize_registry(registry), Entry { token: token.secret().to_string(), user });
+        self.registries.insert(
+            normalize_registry(registry),
+            Entry {
+                token: token.secret().to_string(),
+                user,
+            },
+        );
     }
 
     /// Removes the entry; whether there was one.
     pub fn remove(&mut self, registry: &str) -> bool {
-        self.registries.remove(&normalize_registry(registry)).is_some()
+        self.registries
+            .remove(&normalize_registry(registry))
+            .is_some()
     }
 }
 
@@ -119,17 +143,30 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let p = t.path().join("sub/credentials.toml");
         let mut c = Credentials::default();
-        c.set("https://fluxpkg.dev", &Token::new("fpk_secret"), Some("luna".into()));
+        c.set(
+            "https://fluxpkg.dev",
+            &Token::new("fpk_secret"),
+            Some("luna".into()),
+        );
         c.save(&p).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         let text = std::fs::read_to_string(&p).unwrap();
-        assert!(text.contains("[registries.\"https://fluxpkg.dev/\"]"), "{text}");
+        assert!(
+            text.contains("[registries.\"https://fluxpkg.dev/\"]"),
+            "{text}"
+        );
         let back = Credentials::load(&p).unwrap();
-        assert_eq!(back.get("https://fluxpkg.dev/").unwrap().user.as_deref(), Some("luna"));
+        assert_eq!(
+            back.get("https://fluxpkg.dev/").unwrap().user.as_deref(),
+            Some("luna")
+        );
         let mut back = back;
         assert!(back.remove("https://fluxpkg.dev/"));
         assert!(!back.remove("https://fluxpkg.dev/"));

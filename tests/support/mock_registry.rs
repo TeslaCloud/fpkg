@@ -99,12 +99,25 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
             headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
         }
     }
-    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let len: usize = headers
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body).ok()?;
     let (path, q) = target.split_once('?').unwrap_or((&target, ""));
-    let query = q.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (decode(k), decode(v))).collect();
-    Some(Request { method, path: path.to_string(), query, headers, body })
+    let query = q
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (decode(k), decode(v)))
+        .collect();
+    Some(Request {
+        method,
+        path: path.to_string(),
+        query,
+        headers,
+        body,
+    })
 }
 
 fn write_response(stream: &mut TcpStream, r: Response) {
@@ -120,7 +133,11 @@ fn write_response(stream: &mut TcpStream, r: Response) {
         503 => "Service Unavailable",
         _ => "Status",
     };
-    let mut head = format!("HTTP/1.1 {} {reason}\r\nX-Fpkg-Api: 1\r\nConnection: close\r\nContent-Length: {}\r\n", r.status, r.body.len());
+    let mut head = format!(
+        "HTTP/1.1 {} {reason}\r\nX-Fpkg-Api: 1\r\nConnection: close\r\nContent-Length: {}\r\n",
+        r.status,
+        r.body.len()
+    );
     for (k, v) in &r.headers {
         head.push_str(&format!("{k}: {v}\r\n"));
     }
@@ -173,7 +190,8 @@ struct State {
 
 impl State {
     fn authorized(&self, req: &Request) -> bool {
-        req.headers.get("authorization").map(|a| a.as_str()) == Some(&format!("Bearer {}", self.token))
+        req.headers.get("authorization").map(|a| a.as_str())
+            == Some(&format!("Bearer {}", self.token))
     }
 
     fn with_docs(&self, mut m: VersionMeta) -> VersionMeta {
@@ -188,8 +206,10 @@ impl State {
         };
         let seg: Vec<String> = rest.split('/').map(decode).collect();
         let seg: Vec<&str> = seg.iter().map(String::as_str).collect();
-        let id = |s: &str| PackageId::new(s).map_err(|e| error(404, "not_found", &e.to_string(), &[]));
-        let ver = |s: &str| Version::parse(s).map_err(|e| error(404, "not_found", &e.to_string(), &[]));
+        let id =
+            |s: &str| PackageId::new(s).map_err(|e| error(404, "not_found", &e.to_string(), &[]));
+        let ver =
+            |s: &str| Version::parse(s).map_err(|e| error(404, "not_found", &e.to_string(), &[]));
         let token = Token::none();
         let r = (|| -> Result<Response, Response> {
             Ok(match (req.method.as_str(), seg.as_slice()) {
@@ -197,33 +217,57 @@ impl State {
                     if !self.authorized(&req) {
                         return Err(unauthorized());
                     }
-                    json(200, &serde_json::json!({ "login": self.login, "token_name": "mock" }))
+                    json(
+                        200,
+                        &serde_json::json!({ "login": self.login, "token_name": "mock" }),
+                    )
                 }
                 ("GET", ["search"]) => {
                     let q = req.query.get("q").cloned().unwrap_or_default();
-                    let page = req.query.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+                    let page = req
+                        .query
+                        .get("page")
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(1);
                     json(200, &self.reg.search(&q, page).map_err(from_registry)?)
                 }
                 ("GET", ["packages", p]) => {
                     let pid = id(p)?;
                     let inm = req.headers.get("if-none-match").map(String::as_str);
-                    match self.reg.package_conditional(&pid, inm).map_err(from_registry)? {
-                        Conditional::NotFound => error(404, "not_found", &format!("package '{p}' does not exist"), &[]),
-                        Conditional::NotModified => Response { status: 304, headers: vec![("ETag".into(), inm.unwrap_or("").into())], body: vec![] },
+                    match self
+                        .reg
+                        .package_conditional(&pid, inm)
+                        .map_err(from_registry)?
+                    {
+                        Conditional::NotFound => error(
+                            404,
+                            "not_found",
+                            &format!("package '{p}' does not exist"),
+                            &[],
+                        ),
+                        Conditional::NotModified => Response {
+                            status: 304,
+                            headers: vec![("ETag".into(), inm.unwrap_or("").into())],
+                            body: vec![],
+                        },
                         Conditional::Modified { mut doc, etag } => {
                             for m in doc.versions.values_mut() {
                                 *m = self.with_docs(m.clone());
                             }
                             let mut r = json(200, &doc);
                             r.headers.push(("ETag".into(), etag.unwrap_or_default()));
-                            r.headers.push(("Cache-Control".into(), "public, max-age=60, stale-while-revalidate=600".into()));
+                            r.headers.push((
+                                "Cache-Control".into(),
+                                "public, max-age=60, stale-while-revalidate=600".into(),
+                            ));
                             r
                         }
                     }
                 }
-                ("GET", ["packages", p, "owners"]) => {
-                    json(200, &serde_json::json!({ "owners": self.reg.owners(&id(p)?).map_err(from_registry)? }))
-                }
+                ("GET", ["packages", p, "owners"]) => json(
+                    200,
+                    &serde_json::json!({ "owners": self.reg.owners(&id(p)?).map_err(from_registry)? }),
+                ),
                 ("PUT" | "DELETE", ["packages", p, "owners", login]) => {
                     if !self.authorized(&req) {
                         return Err(unauthorized());
@@ -232,13 +276,20 @@ impl State {
                     if add && *login != self.login {
                         return Err(error(404, "not_found", &format!("no user '{login}'"), &[]));
                     }
-                    self.reg.set_owner(&id(p)?, login, add, &token).map_err(from_registry)?;
-                    json(200, &serde_json::json!({ "owners": self.reg.owners(&id(p)?).map_err(from_registry)? }))
+                    self.reg
+                        .set_owner(&id(p)?, login, add, &token)
+                        .map_err(from_registry)?;
+                    json(
+                        200,
+                        &serde_json::json!({ "owners": self.reg.owners(&id(p)?).map_err(from_registry)? }),
+                    )
                 }
-                ("GET", ["packages", p, "versions", v]) => match self.reg.version(&id(p)?, &ver(v)?).map_err(from_registry)? {
-                    Some(m) => json(200, &self.with_docs(m)),
-                    None => error(404, "not_found", &format!("{p} {v} does not exist"), &[]),
-                },
+                ("GET", ["packages", p, "versions", v]) => {
+                    match self.reg.version(&id(p)?, &ver(v)?).map_err(from_registry)? {
+                        Some(m) => json(200, &self.with_docs(m)),
+                        None => error(404, "not_found", &format!("{p} {v} does not exist"), &[]),
+                    }
+                }
                 ("GET", ["packages", p, "versions", v, "archive"]) => {
                     let bytes = self.reg.archive(&id(p)?, &ver(v)?).map_err(from_registry)?;
                     let sha = fpkg_core::sha256_hex(&bytes);
@@ -256,7 +307,9 @@ impl State {
                     if !self.authorized(&req) {
                         return Err(unauthorized());
                     }
-                    self.reg.yank(&id(p)?, &ver(v)?, *action == "yank", &token).map_err(from_registry)?;
+                    self.reg
+                        .yank(&id(p)?, &ver(v)?, *action == "yank", &token)
+                        .map_err(from_registry)?;
                     json(200, &serde_json::json!({ "ok": true }))
                 }
                 ("PUT", ["packages", p, "versions", v]) => {
@@ -265,14 +318,33 @@ impl State {
                     }
                     let ct = req.headers.get("content-type").cloned().unwrap_or_default();
                     let Some((meta, archive)) = multipart(&ct, &req.body) else {
-                        return Err(error(400, "bad_request", "expected multipart metadata and archive", &[]));
+                        return Err(error(
+                            400,
+                            "bad_request",
+                            "expected multipart metadata and archive",
+                            &[],
+                        ));
                     };
-                    let meta: VersionMeta = serde_json::from_slice(&meta)
-                        .map_err(|e| error(422, "invalid_metadata", "metadata is not valid", &[e.to_string()]))?;
+                    let meta: VersionMeta = serde_json::from_slice(&meta).map_err(|e| {
+                        error(
+                            422,
+                            "invalid_metadata",
+                            "metadata is not valid",
+                            &[e.to_string()],
+                        )
+                    })?;
                     if meta.id != *p || meta.version != *v {
-                        return Err(error(422, "mismatch", "the URL and the metadata disagree", &["id/version".into()]));
+                        return Err(error(
+                            422,
+                            "mismatch",
+                            "the URL and the metadata disagree",
+                            &["id/version".into()],
+                        ));
                     }
-                    let published = self.reg.publish(&meta, &archive, &token).map_err(from_registry)?;
+                    let published = self
+                        .reg
+                        .publish(&meta, &archive, &token)
+                        .map_err(from_registry)?;
                     json(201, &self.with_docs(published.meta))
                 }
                 _ => error(404, "not_found", "no such route", &[]),
@@ -288,7 +360,12 @@ impl MockRegistry {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{port}/");
-        let state = State { reg: FileRegistry::new(dir).with_login(login), token: token.into(), login: login.into(), base: url.clone() };
+        let state = State {
+            reg: FileRegistry::new(dir).with_login(login),
+            token: token.into(),
+            login: login.into(),
+            base: url.clone(),
+        };
         let fail_next = Arc::new(AtomicU32::new(0));
         let fail = fail_next.clone();
         let fail_bare = Arc::new(AtomicU32::new(0));
@@ -296,7 +373,9 @@ impl MockRegistry {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let Some(req) = read_request(&mut stream) else { continue };
+                let Some(req) = read_request(&mut stream) else {
+                    continue;
+                };
                 if bare.load(Ordering::SeqCst) > 0 {
                     bare.fetch_sub(1, Ordering::SeqCst);
                     let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nupstream ko");
@@ -311,6 +390,12 @@ impl MockRegistry {
                 write_response(&mut stream, resp);
             }
         });
-        MockRegistry { url, token: token.into(), login: login.into(), fail_next, fail_bare }
+        MockRegistry {
+            url,
+            token: token.into(),
+            login: login.into(),
+            fail_next,
+            fail_bare,
+        }
     }
 }

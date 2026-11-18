@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use pubgrub::{
-    DefaultStringReporter, Dependencies, DependencyProvider, PackageResolutionStatistics, PubGrubError, Ranges,
-    Reporter, VersionSet,
+    DefaultStringReporter, Dependencies, DependencyProvider, PackageResolutionStatistics,
+    PubGrubError, Ranges, Reporter, VersionSet,
 };
 
 use crate::PackageId;
@@ -113,7 +113,10 @@ impl fmt::Display for VSet {
 
 impl VSet {
     fn of(r: Ranges<Version>) -> Self {
-        VSet { ranges: r, label: None }
+        VSet {
+            ranges: r,
+            label: None,
+        }
     }
 
     /// A result equal to one operand keeps that operand's label.
@@ -168,11 +171,16 @@ fn comparator_ranges(c: &Comparator) -> Ranges<Version> {
 
 /// The version ranges a constraint allows.
 pub fn constraint_ranges(c: &Constraint) -> Ranges<Version> {
-    c.comparators.iter().fold(Ranges::full(), |acc, cmp| acc.intersection(&comparator_ranges(cmp)))
+    c.comparators.iter().fold(Ranges::full(), |acc, cmp| {
+        acc.intersection(&comparator_ranges(cmp))
+    })
 }
 
 fn vset(c: &Constraint) -> VSet {
-    VSet { ranges: constraint_ranges(c), label: Some(c.to_string()) }
+    VSet {
+        ranges: constraint_ranges(c),
+        label: Some(c.to_string()),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -199,7 +207,10 @@ struct Provider<'a> {
 
 impl<'a> Provider<'a> {
     fn fixed(&self, id: &str) -> Option<&'a Manifest> {
-        self.input.workspace.get(id).or_else(|| self.input.paths.get(id).map(|(_, m)| m))
+        self.input
+            .workspace
+            .get(id)
+            .or_else(|| self.input.paths.get(id).map(|(_, m)| m))
     }
 
     fn locked(&self, id: &str) -> Option<&'a LockedPackage> {
@@ -231,7 +242,13 @@ impl<'a> Provider<'a> {
                                 }
                             })
                             .collect();
-                        Candidate { version, yanked: m.yanked, sha256: m.dist.as_ref().map(|d| d.sha256.clone()), deps, broken }
+                        Candidate {
+                            version,
+                            yanked: m.yanked,
+                            sha256: m.dist.as_ref().map(|d| d.sha256.clone()),
+                            deps,
+                            broken,
+                        }
                     })
                     .collect(),
                 Ok(None) => {
@@ -249,11 +266,17 @@ impl<'a> Provider<'a> {
                 Vec::new()
             }
         };
-        self.candidates.borrow_mut().insert(id.to_string(), list.clone());
+        self.candidates
+            .borrow_mut()
+            .insert(id.to_string(), list.clone());
         Ok(list)
     }
 
-    fn dep_constraints(&self, owner: &str, deps: impl Iterator<Item = (String, Constraint)>) -> Vec<(Pkg, VSet)> {
+    fn dep_constraints(
+        &self,
+        owner: &str,
+        deps: impl Iterator<Item = (String, Constraint)>,
+    ) -> Vec<(Pkg, VSet)> {
         let mut merged: BTreeMap<String, Vec<Constraint>> = BTreeMap::new();
         for (id, c) in deps {
             if let Some(m) = self.fixed(&id)
@@ -264,7 +287,11 @@ impl<'a> Provider<'a> {
                     m.version
                 ));
             }
-            self.seen.borrow_mut().entry(id.clone()).or_default().push(c.clone());
+            self.seen
+                .borrow_mut()
+                .entry(id.clone())
+                .or_default()
+                .push(c.clone());
             merged.entry(id).or_default().push(c);
         }
         merged
@@ -273,9 +300,18 @@ impl<'a> Provider<'a> {
                 let set = if cs.len() == 1 {
                     vset(&cs[0])
                 } else {
-                    let ranges = cs.iter().fold(Ranges::full(), |acc, c| acc.intersection(&constraint_ranges(c)));
-                    let label = cs.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
-                    VSet { ranges, label: Some(label) }
+                    let ranges = cs.iter().fold(Ranges::full(), |acc, c| {
+                        acc.intersection(&constraint_ranges(c))
+                    });
+                    let label = cs
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    VSet {
+                        ranges,
+                        label: Some(label),
+                    }
                 };
                 (Pkg::Id(id), set)
             })
@@ -288,9 +324,20 @@ impl Provider<'_> {
     /// every candidate version.
     fn walk_reachable(&self) -> Result<(), RegistryError> {
         let input = self.input;
-        let mut queue: Vec<String> = input.root_deps.iter().filter_map(|d| d.package_id().map(str::to_string)).collect();
-        for m in input.workspace.values().chain(input.paths.values().map(|(_, m)| m)) {
-            queue.extend(m.package_deps().filter_map(|d| d.package_id().map(str::to_string)));
+        let mut queue: Vec<String> = input
+            .root_deps
+            .iter()
+            .filter_map(|d| d.package_id().map(str::to_string))
+            .collect();
+        for m in input
+            .workspace
+            .values()
+            .chain(input.paths.values().map(|(_, m)| m))
+        {
+            queue.extend(
+                m.package_deps()
+                    .filter_map(|d| d.package_id().map(str::to_string)),
+            );
         }
         let mut seen = BTreeSet::new();
         while let Some(id) = queue.pop() {
@@ -313,17 +360,31 @@ impl DependencyProvider for Provider<'_> {
     type M = String;
     type Err = RegistryError;
 
-    fn prioritize(&self, package: &Pkg, _range: &VSet, stats: &PackageResolutionStatistics) -> Self::Priority {
+    fn prioritize(
+        &self,
+        package: &Pkg,
+        _range: &VSet,
+        stats: &PackageResolutionStatistics,
+    ) -> Self::Priority {
         // Conflicting packages first, then those with few candidates.
         let n = match package {
             Pkg::Root(_) => 0,
             Pkg::Id(id) if self.fixed(id).is_some() => 1,
-            Pkg::Id(id) => self.candidates.borrow().get(id).map(Vec::len).unwrap_or(usize::MAX / 2),
+            Pkg::Id(id) => self
+                .candidates
+                .borrow()
+                .get(id)
+                .map(Vec::len)
+                .unwrap_or(usize::MAX / 2),
         };
         (stats.conflict_count(), Reverse(n))
     }
 
-    fn choose_version(&self, package: &Pkg, range: &VSet) -> Result<Option<Version>, RegistryError> {
+    fn choose_version(
+        &self,
+        package: &Pkg,
+        range: &VSet,
+    ) -> Result<Option<Version>, RegistryError> {
         let id = match package {
             Pkg::Root(_) => return Ok(Some(self.root_version.clone())),
             Pkg::Id(id) => id,
@@ -337,10 +398,17 @@ impl DependencyProvider for Provider<'_> {
         // ever asked for as `*` and has no release at all.
         let seen = self.seen.borrow().get(id).cloned().unwrap_or_default();
         let only_any = seen.iter().all(Constraint::is_any);
-        let has_release = cands.iter().any(|c| !c.yanked && !c.version.is_prerelease());
-        let pre_ok = |v: &Version| seen.iter().any(|c| c.allows_prerelease_of(v)) || (only_any && !has_release);
+        let has_release = cands
+            .iter()
+            .any(|c| !c.yanked && !c.version.is_prerelease());
+        let pre_ok = |v: &Version| {
+            seen.iter().any(|c| c.allows_prerelease_of(v)) || (only_any && !has_release)
+        };
         let allowed = |v: &Version| range.contains(v) && (!v.is_prerelease() || pre_ok(v));
-        let locked = self.locked(id).filter(|l| matches!(l.source, Source::Registry(_))).map(|l| &l.version);
+        let locked = self
+            .locked(id)
+            .filter(|l| matches!(l.source, Source::Registry(_)))
+            .map(|l| &l.version);
         // The locked version first (yanked or not: a yank never breaks a lock).
         if let Some(lv) = locked
             && allowed(lv)
@@ -359,7 +427,11 @@ impl DependencyProvider for Provider<'_> {
         Ok(pick)
     }
 
-    fn get_dependencies(&self, package: &Pkg, version: &Version) -> Result<Dependencies<Pkg, VSet, String>, RegistryError> {
+    fn get_dependencies(
+        &self,
+        package: &Pkg,
+        version: &Version,
+    ) -> Result<Dependencies<Pkg, VSet, String>, RegistryError> {
         let input = self.input;
         let deps: Vec<(Pkg, VSet)> = match package {
             Pkg::Root(name) => {
@@ -367,7 +439,10 @@ impl DependencyProvider for Provider<'_> {
                 let mut list: Vec<(String, Constraint)> = input
                     .root_deps
                     .iter()
-                    .filter_map(|d| d.package_id().map(|id| (id.to_string(), d.constraint.clone())))
+                    .filter_map(|d| {
+                        d.package_id()
+                            .map(|id| (id.to_string(), d.constraint.clone()))
+                    })
                     .collect();
                 // Every local package is part of the project, depended on or not.
                 for id in input.workspace.keys().chain(input.paths.keys()) {
@@ -380,7 +455,10 @@ impl DependencyProvider for Provider<'_> {
             Pkg::Id(id) => {
                 if let Some(m) = self.fixed(id) {
                     let owner = format!("{id} {version}");
-                    let list = m.package_deps().filter_map(|d| d.package_id().map(|i| (i.to_string(), d.constraint.clone())));
+                    let list = m.package_deps().filter_map(|d| {
+                        d.package_id()
+                            .map(|i| (i.to_string(), d.constraint.clone()))
+                    });
                     self.dep_constraints(&owner, list)
                 } else {
                     let cands = self.registry_candidates(id)?;
@@ -395,15 +473,23 @@ impl DependencyProvider for Provider<'_> {
             }
         };
         // Pubgrub cannot express a package depending on itself; that is a cycle.
-        Ok(Dependencies::Available(deps.into_iter().filter(|(p, _)| p != package).collect()))
+        Ok(Dependencies::Available(
+            deps.into_iter().filter(|(p, _)| p != package).collect(),
+        ))
     }
 }
 
 /// Resolves the project and returns the new lockfile.
 pub fn resolve(input: &ResolveInput<'_>) -> Result<Lockfile, ResolveError> {
     // A package listing itself is the shortest cycle.
-    for (id, m) in input.workspace.iter().chain(input.paths.iter().map(|(k, (_, m))| (k, m))) {
-        if m.package_deps().any(|d| d.package_id() == Some(id.as_str())) {
+    for (id, m) in input
+        .workspace
+        .iter()
+        .chain(input.paths.iter().map(|(k, (_, m))| (k, m)))
+    {
+        if m.package_deps()
+            .any(|d| d.package_id() == Some(id.as_str()))
+        {
             return Err(ResolveError::Cycle(vec![id.clone(), id.clone()]));
         }
     }
@@ -435,8 +521,14 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Lockfile, ResolveError> {
             }
             for id in provider.not_found.borrow().iter() {
                 match input.registry {
-                    Some((_, url)) => text += &format!("{id} is not a local package and not on the registry {url}\n"),
-                    None => text += &format!("{id} is not a local package and no registry is configured\n"),
+                    Some((_, url)) => {
+                        text +=
+                            &format!("{id} is not a local package and not on the registry {url}\n")
+                    }
+                    None => {
+                        text +=
+                            &format!("{id} is not a local package and no registry is configured\n")
+                    }
                 }
             }
             text += &DefaultStringReporter::report(&tree);
@@ -444,34 +536,68 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Lockfile, ResolveError> {
         }
         Err(PubGrubError::ErrorChoosingVersion { source, .. })
         | Err(PubGrubError::ErrorRetrievingDependencies { source, .. })
-        | Err(PubGrubError::ErrorInShouldCancel(source)) => return Err(ResolveError::Registry(source)),
+        | Err(PubGrubError::ErrorInShouldCancel(source)) => {
+            return Err(ResolveError::Registry(source));
+        }
     };
 
     let mut packages = Vec::new();
     let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (pkg, version) in solution.iter() {
         let Pkg::Id(id) = pkg else { continue };
-        let (source, sha256, deps): (Source, Option<String>, Vec<String>) = if let Some(m) = input.workspace.get(id) {
-            (Source::Workspace, None, m.package_deps().filter_map(|d| d.package_id().map(str::to_string)).collect())
-        } else if let Some((rel, m)) = input.paths.get(id) {
-            (Source::Path(rel.clone()), None, m.package_deps().filter_map(|d| d.package_id().map(str::to_string)).collect())
-        } else {
-            let cands = provider.candidates.borrow();
-            let c = cands.get(id).and_then(|l| l.iter().find(|c| &c.version == version));
-            let Some(c) = c else {
-                return Err(ResolveError::NoSolution(format!("{id} {version} vanished from the registry metadata")));
+        let (source, sha256, deps): (Source, Option<String>, Vec<String>) =
+            if let Some(m) = input.workspace.get(id) {
+                (
+                    Source::Workspace,
+                    None,
+                    m.package_deps()
+                        .filter_map(|d| d.package_id().map(str::to_string))
+                        .collect(),
+                )
+            } else if let Some((rel, m)) = input.paths.get(id) {
+                (
+                    Source::Path(rel.clone()),
+                    None,
+                    m.package_deps()
+                        .filter_map(|d| d.package_id().map(str::to_string))
+                        .collect(),
+                )
+            } else {
+                let cands = provider.candidates.borrow();
+                let c = cands
+                    .get(id)
+                    .and_then(|l| l.iter().find(|c| &c.version == version));
+                let Some(c) = c else {
+                    return Err(ResolveError::NoSolution(format!(
+                        "{id} {version} vanished from the registry metadata"
+                    )));
+                };
+                let Some(sha) = c.sha256.clone() else {
+                    return Err(ResolveError::Registry(RegistryError::Invalid(format!(
+                        "{id} {version} has no dist.sha256"
+                    ))));
+                };
+                let url = input
+                    .registry
+                    .map(|(_, u)| u.to_string())
+                    .unwrap_or_default();
+                (
+                    Source::Registry(url),
+                    Some(sha),
+                    c.deps.iter().map(|(d, _)| d.clone()).collect(),
+                )
             };
-            let Some(sha) = c.sha256.clone() else {
-                return Err(ResolveError::Registry(RegistryError::Invalid(format!("{id} {version} has no dist.sha256"))));
-            };
-            let url = input.registry.map(|(_, u)| u.to_string()).unwrap_or_default();
-            (Source::Registry(url), Some(sha), c.deps.iter().map(|(d, _)| d.clone()).collect())
-        };
         let mut deps = deps;
         deps.sort();
         deps.dedup();
         graph.insert(id.clone(), deps.clone());
-        packages.push(LockedPackage { id: id.clone(), version: version.clone(), source, sha256, dependencies: deps });
+        packages.push(LockedPackage {
+            id: id.clone(),
+            version: version.clone(),
+            source,
+            sha256,
+            dependencies: deps,
+        });
     }
     if let Some(cycle) = find_cycle(&graph) {
         return Err(ResolveError::Cycle(cycle));
@@ -529,7 +655,12 @@ pub fn topological(graph: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>,
     if let Some(c) = find_cycle(graph) {
         return Err(ResolveError::Cycle(c));
     }
-    fn visit(n: &str, graph: &BTreeMap<String, Vec<String>>, seen: &mut BTreeSet<String>, out: &mut Vec<String>) {
+    fn visit(
+        n: &str,
+        graph: &BTreeMap<String, Vec<String>>,
+        seen: &mut BTreeSet<String>,
+        out: &mut Vec<String>,
+    ) {
         if !seen.insert(n.to_string()) {
             return;
         }

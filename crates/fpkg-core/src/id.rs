@@ -30,13 +30,18 @@ impl PackageId {
         let bytes = s.as_bytes();
         match bytes.first() {
             None => return Some("it is empty"),
-            Some(c) if !c.is_ascii_lowercase() => return Some("it must start with a lowercase letter"),
+            Some(c) if !c.is_ascii_lowercase() => {
+                return Some("it must start with a lowercase letter");
+            }
             _ => {}
         }
         if bytes.len() > 64 {
             return Some("it is longer than 64 characters");
         }
-        if !bytes.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_') {
+        if !bytes
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
+        {
             return Some("only lowercase letters, digits and '_' are allowed");
         }
         None
@@ -92,7 +97,17 @@ mod tests {
         for ok in ["a", "sfs", "active_record", "utf8", "a_1", &"a".repeat(64)] {
             assert!(PackageId::is_valid(ok), "{ok}");
         }
-        for bad in ["", "1a", "_a", "Active", "a-b", "a.b", "../x", &"a".repeat(65), "é"] {
+        for bad in [
+            "",
+            "1a",
+            "_a",
+            "Active",
+            "a-b",
+            "a.b",
+            "../x",
+            &"a".repeat(65),
+            "é",
+        ] {
             assert!(!PackageId::is_valid(bad), "{bad}");
         }
     }

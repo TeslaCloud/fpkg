@@ -16,7 +16,10 @@ pub enum VersionError {
 }
 
 fn verr(input: &str, reason: impl Into<String>) -> VersionError {
-    VersionError::Version { input: input.to_string(), reason: reason.into() }
+    VersionError::Version {
+        input: input.to_string(),
+        reason: reason.into(),
+    }
 }
 
 /// A canonical version: three numeric components and an optional suffix.
@@ -31,7 +34,12 @@ pub struct Version {
 
 impl Version {
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Version { major, minor, patch, suffix: None }
+        Version {
+            major,
+            minor,
+            patch,
+            suffix: None,
+        }
     }
 
     /// Parses Flux's grammar and also returns how many numeric components were
@@ -56,7 +64,9 @@ impl Version {
             }
             // Leading zeros are accepted, as Flux's tonumber accepts them, and
             // dropped by canonicalisation ('1.02' is 1.2.0).
-            nums[i] = p.parse().map_err(|_| verr(input, format!("component '{p}' is too large")))?;
+            nums[i] = p
+                .parse()
+                .map_err(|_| verr(input, format!("component '{p}' is too large")))?;
         }
         let suffix = match suffix {
             None => None,
@@ -65,7 +75,11 @@ impl Version {
                     return Err(verr(input, "the suffix after '-' is empty"));
                 }
                 for ident in x.split('.') {
-                    if ident.is_empty() || !ident.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                    if ident.is_empty()
+                        || !ident
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    {
                         return Err(verr(
                             input,
                             "the suffix must be dot-separated identifiers of [0-9A-Za-z-]",
@@ -73,14 +87,25 @@ impl Version {
                     }
                     // Semver: numeric identifiers have no leading zeros, which
                     // keeps ordering and equality in agreement (rc.01 vs rc.1).
-                    if ident.len() > 1 && ident.starts_with('0') && ident.bytes().all(|b| b.is_ascii_digit()) {
-                        return Err(verr(input, format!("the numeric suffix identifier '{ident}' has a leading zero")));
+                    if ident.len() > 1
+                        && ident.starts_with('0')
+                        && ident.bytes().all(|b| b.is_ascii_digit())
+                    {
+                        return Err(verr(
+                            input,
+                            format!("the numeric suffix identifier '{ident}' has a leading zero"),
+                        ));
                     }
                 }
                 Some(x.to_string())
             }
         };
-        let v = Version { major: nums[0], minor: nums[1], patch: nums[2], suffix };
+        let v = Version {
+            major: nums[0],
+            minor: nums[1],
+            patch: nums[2],
+            suffix,
+        };
         Ok((v, parts.len() as u8))
     }
 
@@ -251,7 +276,12 @@ impl Comparator {
 
 impl fmt::Display for Comparator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.op.as_str(), self.version.display_components(self.components))
+        write!(
+            f,
+            "{} {}",
+            self.op.as_str(),
+            self.version.display_components(self.components)
+        )
     }
 }
 
@@ -263,7 +293,9 @@ pub struct Constraint {
 
 impl Constraint {
     pub fn any() -> Self {
-        Constraint { comparators: Vec::new() }
+        Constraint {
+            comparators: Vec::new(),
+        }
     }
 
     pub fn is_any(&self) -> bool {
@@ -272,18 +304,31 @@ impl Constraint {
 
     /// `== v`
     pub fn exact(v: &Version) -> Self {
-        Constraint { comparators: vec![Comparator { op: Op::Eq, version: v.clone(), components: 3 }] }
+        Constraint {
+            comparators: vec![Comparator {
+                op: Op::Eq,
+                version: v.clone(),
+                components: 3,
+            }],
+        }
     }
 
     /// What `fpkg add` writes by default: `~> <major>.<minor>`.
     pub fn default_for(v: &Version) -> Self {
         Constraint {
-            comparators: vec![Comparator { op: Op::Tilde, version: Version::new(v.major, v.minor, 0), components: 2 }],
+            comparators: vec![Comparator {
+                op: Op::Tilde,
+                version: Version::new(v.major, v.minor, 0),
+                components: 2,
+            }],
         }
     }
 
     pub fn parse(input: &str) -> Result<Constraint, VersionError> {
-        let cerr = |reason: String| VersionError::Constraint { input: input.to_string(), reason };
+        let cerr = |reason: String| VersionError::Constraint {
+            input: input.to_string(),
+            reason,
+        };
         let s = input.trim();
         if s.is_empty() || s == "*" {
             return Ok(Constraint::any());
@@ -312,13 +357,20 @@ impl Constraint {
             } else if part.starts_with(|c: char| c.is_ascii_digit()) {
                 (Op::Eq, part)
             } else {
-                return Err(cerr(format!("'{part}' does not start with ==, >=, <=, ~>, >, < or a version")));
+                return Err(cerr(format!(
+                    "'{part}' does not start with ==, >=, <=, ~>, >, < or a version"
+                )));
             };
-            let (version, components) = Version::parse_with_components(rest).map_err(|e| match e {
-                VersionError::Version { reason, .. } => cerr(reason),
-                other => other,
-            })?;
-            comparators.push(Comparator { op, version, components });
+            let (version, components) =
+                Version::parse_with_components(rest).map_err(|e| match e {
+                    VersionError::Version { reason, .. } => cerr(reason),
+                    other => other,
+                })?;
+            comparators.push(Comparator {
+                op,
+                version,
+                components,
+            });
         }
         Ok(Constraint { comparators })
     }
@@ -338,7 +390,9 @@ impl Constraint {
     /// Whether a comparator names a pre-release with `v`'s X.Y.Z.
     pub fn allows_prerelease_of(&self, v: &Version) -> bool {
         self.comparators.iter().any(|c| {
-            c.version.is_prerelease() && (c.version.major, c.version.minor, c.version.patch) == (v.major, v.minor, v.patch)
+            c.version.is_prerelease()
+                && (c.version.major, c.version.minor, c.version.patch)
+                    == (v.major, v.minor, v.patch)
         })
     }
 }
@@ -409,7 +463,21 @@ mod tests {
             assert_eq!(ver.to_string(), canonical, "{input}");
             assert_eq!(comps, n, "{input}");
         }
-        for bad in ["", "a", "1.", ".1", "1..2", "1.2.3.4", "1.2.3-", "1.2.3-be$ta", "v1.0", "1.0 beta", "-1", "1.0.0-rc.01", "1.0.0-00"] {
+        for bad in [
+            "",
+            "a",
+            "1.",
+            ".1",
+            "1..2",
+            "1.2.3.4",
+            "1.2.3-",
+            "1.2.3-be$ta",
+            "v1.0",
+            "1.0 beta",
+            "-1",
+            "1.0.0-rc.01",
+            "1.0.0-00",
+        ] {
             assert!(Version::parse(bad).is_err(), "{bad} should not parse");
         }
         assert!(Version::parse_strict("1.0").is_err());
@@ -441,10 +509,21 @@ mod tests {
             assert!(v(w[0]) < v(w[1]), "{} < {}", w[0], w[1]);
         }
         // Ord and Eq agree: equal ordering means equal values.
-        let all = ["1.0.0-rc.1", "1.0.0-rc.10", "1.0.0-rc.2", "1.0.0-0", "1.0.0-rc.1a", "1.0.0"];
+        let all = [
+            "1.0.0-rc.1",
+            "1.0.0-rc.10",
+            "1.0.0-rc.2",
+            "1.0.0-0",
+            "1.0.0-rc.1a",
+            "1.0.0",
+        ];
         for a in all {
             for b in all {
-                assert_eq!(v(a).cmp(&v(b)) == std::cmp::Ordering::Equal, v(a) == v(b), "{a} {b}");
+                assert_eq!(
+                    v(a).cmp(&v(b)) == std::cmp::Ordering::Equal,
+                    v(a) == v(b),
+                    "{a} {b}"
+                );
             }
         }
         assert!(v("1.0.0-rc.2") < v("1.0.0-rc.10"));
@@ -456,9 +535,17 @@ mod tests {
             ("1.2.3", &["1.2.3"], &["1.2.4", "1.2.2", "1.2.3-beta"]),
             ("== 1.2.3", &["1.2.3"], &["1.2.4", "1.3.0"]),
             ("== 1.2", &["1.2.0"], &["1.2.1"]),
-            (">= 1.2", &["1.2.0", "1.2.9", "2.0.0", "10.0.0"], &["1.1.9", "1.0.0"]),
+            (
+                ">= 1.2",
+                &["1.2.0", "1.2.9", "2.0.0", "10.0.0"],
+                &["1.1.9", "1.0.0"],
+            ),
             ("~> 1.2", &["1.2.0", "1.2.9", "1.9.9"], &["2.0.0", "1.1.9"]),
-            ("~> 1.2.3", &["1.2.3", "1.2.99"], &["1.3.0", "1.2.2", "2.0.0"]),
+            (
+                "~> 1.2.3",
+                &["1.2.3", "1.2.99"],
+                &["1.3.0", "1.2.2", "2.0.0"],
+            ),
             // Flux's is_version treats '~> 1.2.0' like '~> 1.2'; fpkg follows Ruby.
             ("~> 1.2.0", &["1.2.0", "1.2.5"], &["1.3.0"]),
             ("~> 7.0", &["7.0.9", "7.5.0"], &["8.0.0", "6.9.9"]),
@@ -470,11 +557,23 @@ mod tests {
             ("", &["1.0.0"], &[]),
             (">= 1.0, < 1.5", &["1.0.0", "1.4.9"], &["1.5.0", "0.9.0"]),
             (">=1.0,<1.5", &["1.2.0"], &["1.5.0"]),
-            ("~> 1.2.3-beta", &["1.2.3-beta", "1.2.3-rc", "1.2.3", "1.2.4"], &["1.2.3-alpha", "1.3.0", "1.2.4-beta"]),
+            (
+                "~> 1.2.3-beta",
+                &["1.2.3-beta", "1.2.3-rc", "1.2.3", "1.2.4"],
+                &["1.2.3-alpha", "1.3.0", "1.2.4-beta"],
+            ),
             // Pre-releases match only a constraint that names one of the same X.Y.Z.
-            ("~> 1.2", &["1.3.0"], &["1.3.0-beta", "1.2.0-rc.1", "2.0.0-beta"]),
+            (
+                "~> 1.2",
+                &["1.3.0"],
+                &["1.3.0-beta", "1.2.0-rc.1", "2.0.0-beta"],
+            ),
             ("< 2.0", &["1.9.9"], &["2.0.0-beta", "1.5.0-beta"]),
-            (">= 1.2.3-beta", &["1.2.3-beta", "1.2.3", "1.3.0"], &["1.3.0-beta", "1.2.3-alpha"]),
+            (
+                ">= 1.2.3-beta",
+                &["1.2.3-beta", "1.2.3", "1.3.0"],
+                &["1.3.0-beta", "1.2.3-alpha"],
+            ),
             ("== 2.0.0-beta", &["2.0.0-beta"], &["2.0.0", "2.0.0-beta.2"]),
             ("*", &["2.0.0-beta"], &[]),
         ];
@@ -513,7 +612,10 @@ mod tests {
         let k = c("~> 1.2.3-beta");
         let cmp = &k.comparators[0];
         assert_eq!(cmp.op, Op::Tilde);
-        assert_eq!((cmp.version.major, cmp.version.minor, cmp.version.patch), (1, 2, 3));
+        assert_eq!(
+            (cmp.version.major, cmp.version.minor, cmp.version.patch),
+            (1, 2, 3)
+        );
         assert_eq!(cmp.version.suffix.as_deref(), Some("beta"));
         assert_eq!(c(">= 1.2.0").comparators[0].op, Op::Ge);
         assert_eq!(v("1.0").to_string(), "1.0.0");

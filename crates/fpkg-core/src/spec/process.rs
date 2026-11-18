@@ -25,7 +25,10 @@ const POLL: Duration = Duration::from_millis(5);
 #[derive(Clone, Debug)]
 pub enum Evaluator {
     /// A child process: `program args... <request JSON>`.
-    Process { program: PathBuf, args: Vec<OsString> },
+    Process {
+        program: PathBuf,
+        args: Vec<OsString>,
+    },
     /// This process. Only for trusted specs (fpkg's own tests) and inside the
     /// child itself: a hostile spec can crash or exhaust the process.
     InProcess,
@@ -46,15 +49,22 @@ pub fn evaluator() -> Result<&'static Evaluator, SpecError> {
     if let Some(e) = EVALUATOR.get() {
         return Ok(e);
     }
-    let found = std::env::var_os("FPKG_EVALUATOR").map(PathBuf::from).or_else(|| {
-        let exe = std::env::current_exe().ok()?;
-        let name = format!("fpkg-eval-spec{}", std::env::consts::EXE_SUFFIX);
-        let dir = exe.parent()?;
-        [dir.join(&name), dir.parent()?.join(&name)].into_iter().find(|p| p.is_file())
-    });
+    let found = std::env::var_os("FPKG_EVALUATOR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let exe = std::env::current_exe().ok()?;
+            let name = format!("fpkg-eval-spec{}", std::env::consts::EXE_SUFFIX);
+            let dir = exe.parent()?;
+            [dir.join(&name), dir.parent()?.join(&name)]
+                .into_iter()
+                .find(|p| p.is_file())
+        });
     match found {
         Some(program) => {
-            let _ = EVALUATOR.set(Evaluator::Process { program, args: Vec::new() });
+            let _ = EVALUATOR.set(Evaluator::Process {
+                program,
+                args: Vec::new(),
+            });
             Ok(EVALUATOR.get().unwrap_or(&Evaluator::InProcess))
         }
         None => Err(SpecError::NoEvaluator),
@@ -108,18 +118,39 @@ pub fn child_main(request: Option<&str>) -> i32 {
 }
 
 /// Evaluates in a child process.
-pub(crate) fn run(program: &Path, args: &[OsString], loc: &SpecLocation, env: Env, file: &Path) -> Result<Manifest, SpecError> {
+pub(crate) fn run(
+    program: &Path,
+    args: &[OsString],
+    loc: &SpecLocation,
+    env: Env,
+    file: &Path,
+) -> Result<Manifest, SpecError> {
     let label = format!("{}{}", loc.rel_dir(), super::SPEC_FILE);
     let crashed = |status: String, stderr: &[u8]| {
         let text = String::from_utf8_lossy(stderr);
         let tail: Vec<&str> = text.lines().rev().take(5).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
-        SpecError::Crashed { file: label.clone(), status, stderr: tail.join("\n") }
+        SpecError::Crashed {
+            file: label.clone(),
+            status,
+            stderr: tail.join("\n"),
+        }
     };
-    let request = serde_json::to_string(&Request { location: loc.clone(), file: file.to_path_buf(), env })
-        .map_err(|e| SpecError::Eval { file: label.clone(), message: e.to_string() })?;
+    let request = serde_json::to_string(&Request {
+        location: loc.clone(),
+        file: file.to_path_buf(),
+        env,
+    })
+    .map_err(|e| SpecError::Eval {
+        file: label.clone(),
+        message: e.to_string(),
+    })?;
     let mut cmd = Command::new(program);
-    cmd.args(args).arg(request).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args)
+        .arg(request)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -129,11 +160,15 @@ pub(crate) fn run(program: &Path, args: &[OsString], loc: &SpecLocation, env: En
             cmd.pre_exec(apply_limits);
         }
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| SpecError::Eval { file: label.clone(), message: format!("cannot start the evaluator {}: {e}", program.display()) })?;
+    let mut child = cmd.spawn().map_err(|e| SpecError::Eval {
+        file: label.clone(),
+        message: format!("cannot start the evaluator {}: {e}", program.display()),
+    })?;
     let overflow = Arc::new(AtomicBool::new(false));
-    let out = child.stdout.take().map(|s| reader(s, MAX_OUTPUT, Some(overflow.clone())));
+    let out = child
+        .stdout
+        .take()
+        .map(|s| reader(s, MAX_OUTPUT, Some(overflow.clone())));
     let err = child.stderr.take().map(|s| reader(s, MAX_STDERR, None));
     let start = Instant::now();
     let mut killed: Option<String> = None;
@@ -165,7 +200,9 @@ pub(crate) fn run(program: &Path, args: &[OsString], loc: &SpecLocation, env: En
     if let Some(reason) = killed {
         return Err(crashed(reason, &stderr));
     }
-    let Some(status) = status else { return Err(crashed("could not be waited for".into(), &stderr)) };
+    let Some(status) = status else {
+        return Err(crashed("could not be waited for".into(), &stderr));
+    };
     if !status.success() {
         return Err(crashed(describe(&status), &stderr));
     }
@@ -198,7 +235,11 @@ fn describe(status: &std::process::ExitStatus) -> String {
     }
 }
 
-fn reader<R: Read + Send + 'static>(mut r: R, cap: usize, overflow: Option<Arc<AtomicBool>>) -> std::thread::JoinHandle<Vec<u8>> {
+fn reader<R: Read + Send + 'static>(
+    mut r: R,
+    cap: usize,
+    overflow: Option<Arc<AtomicBool>>,
+) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 16 * 1024];
@@ -226,13 +267,25 @@ fn apply_limits() -> std::io::Result<()> {
     fn set(resource: libc::c_int, soft: u64, hard: Option<u64>) {
         // SAFETY: getrlimit and setrlimit write and read the struct given.
         unsafe {
-            let mut cur = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            let mut cur = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             if libc::getrlimit(resource as _, &mut cur) != 0 {
                 return;
             }
             let max = cur.rlim_max;
-            let clamp = |v: u64| if max == libc::RLIM_INFINITY { v as libc::rlim_t } else { (v as libc::rlim_t).min(max) };
-            let new = libc::rlimit { rlim_cur: clamp(soft), rlim_max: hard.map(clamp).unwrap_or(max) };
+            let clamp = |v: u64| {
+                if max == libc::RLIM_INFINITY {
+                    v as libc::rlim_t
+                } else {
+                    (v as libc::rlim_t).min(max)
+                }
+            };
+            let new = libc::rlimit {
+                rlim_cur: clamp(soft),
+                rlim_max: hard.map(clamp).unwrap_or(max),
+            };
             // Best effort: macOS refuses RLIMIT_AS, and the watchdog covers it.
             let _ = libc::setrlimit(resource as _, &new);
         }
@@ -250,7 +303,15 @@ fn resident_bytes(pid: u32) -> Option<u64> {
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
     // SAFETY: proc_pidinfo writes at most `size` bytes into `info`.
-    let n = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTASKINFO, 0, (&mut info as *mut libc::proc_taskinfo).cast(), size) };
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKINFO,
+            0,
+            (&mut info as *mut libc::proc_taskinfo).cast(),
+            size,
+        )
+    };
     (n == size).then_some(info.pti_resident_size)
 }
 
@@ -270,9 +331,14 @@ fn resident_bytes(_pid: u32) -> Option<u64> {
 
 /// Evaluates many specs, a few child processes at a time; results in order.
 pub(crate) fn run_many(locs: &[SpecLocation], env: Env) -> Vec<Result<Manifest, SpecError>> {
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8).min(locs.len().max(1));
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8)
+        .min(locs.len().max(1));
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<Option<Result<Manifest, SpecError>>>> = Mutex::new((0..locs.len()).map(|_| None).collect());
+    let results: Mutex<Vec<Option<Result<Manifest, SpecError>>>> =
+        Mutex::new((0..locs.len()).map(|_| None).collect());
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {

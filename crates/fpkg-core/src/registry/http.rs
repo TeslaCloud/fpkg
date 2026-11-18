@@ -6,8 +6,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use super::{
-    API_VERSION, ApiError, Conditional, Identity, NetOptions, PER_PAGE, PackageDoc, Published, Registry, RegistryError,
-    Result, SearchPage, Token, VersionMeta,
+    API_VERSION, ApiError, Conditional, Identity, NetOptions, PER_PAGE, PackageDoc, Published,
+    Registry, RegistryError, Result, SearchPage, Token, VersionMeta,
 };
 use crate::PackageId;
 use crate::version::Version;
@@ -59,15 +59,22 @@ pub fn is_loopback(u: &url::Url) -> bool {
 
 impl HttpRegistry {
     pub fn new(url: &str, net: &NetOptions) -> Result<HttpRegistry> {
-        let u = url::Url::parse(url).map_err(|e| RegistryError::Invalid(format!("invalid registry URL '{url}': {e}")))?;
+        let u = url::Url::parse(url)
+            .map_err(|e| RegistryError::Invalid(format!("invalid registry URL '{url}': {e}")))?;
         match u.scheme() {
             "https" => {}
             "http" if is_loopback(&u) => {}
             "http" => return Err(RegistryError::Insecure(url.to_string())),
-            other => return Err(RegistryError::Invalid(format!("unsupported scheme '{other}' in '{url}'"))),
+            other => {
+                return Err(RegistryError::Invalid(format!(
+                    "unsupported scheme '{other}' in '{url}'"
+                )));
+            }
         }
         let root = Self::root_of(&u);
-        let api = root.join("api/v1/").map_err(|e| RegistryError::Invalid(e.to_string()))?;
+        let api = root
+            .join("api/v1/")
+            .map_err(|e| RegistryError::Invalid(e.to_string()))?;
         // No overall deadline, so large archives on slow links finish; each
         // connect, read or write must progress within the timeout.
         let config = ureq::Agent::config_builder()
@@ -79,7 +86,12 @@ impl HttpRegistry {
             .timeout_recv_response(Some(net.timeout))
             .user_agent(format!("fpkg/{}", crate::FPKG_VERSION))
             .build();
-        Ok(HttpRegistry { root, api, agent: config.into(), retries: net.retries })
+        Ok(HttpRegistry {
+            root,
+            api,
+            agent: config.into(),
+            retries: net.retries,
+        })
     }
 
     /// The registry root of a URL that may name the API base (`.../api/v1/`).
@@ -108,7 +120,10 @@ impl HttpRegistry {
     }
 
     fn transport(&self, u: &url::Url, e: impl std::fmt::Display) -> RegistryError {
-        RegistryError::Transport { url: u.to_string(), message: e.to_string() }
+        RegistryError::Transport {
+            url: u.to_string(),
+            message: e.to_string(),
+        }
     }
 
     fn once(
@@ -121,7 +136,9 @@ impl HttpRegistry {
     ) -> std::result::Result<Reply, ureq::Error> {
         macro_rules! with_headers {
             ($req:expr) => {{
-                let mut r = $req.header("Accept", "application/json").header("X-Fpkg-Api", API_VERSION);
+                let mut r = $req
+                    .header("Accept", "application/json")
+                    .header("X-Fpkg-Api", API_VERSION);
                 for (k, v) in headers {
                     r = r.header(*k, v.as_str());
                 }
@@ -142,19 +159,41 @@ impl HttpRegistry {
                 };
                 let req = with_headers!(req);
                 match body {
-                    Some((ct, bytes)) => req.header("Content-Type", ct.as_str()).send(&bytes[..])?,
+                    Some((ct, bytes)) => {
+                        req.header("Content-Type", ct.as_str()).send(&bytes[..])?
+                    }
                     None => req.send_empty()?,
                 }
             }
         };
         let status = resp.status().as_u16();
-        let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
         let api = header("x-fpkg-api");
         let etag = header("etag");
         let sha256 = header("x-fpkg-sha256");
         let retry_after = header("retry-after");
-        let body = if status == 304 { Vec::new() } else { resp.body_mut().with_config().limit(MAX_BODY).read_to_vec()? };
-        Ok(Reply { status, etag, sha256, api, retry_after, retried: 0, body })
+        let body = if status == 304 {
+            Vec::new()
+        } else {
+            resp.body_mut()
+                .with_config()
+                .limit(MAX_BODY)
+                .read_to_vec()?
+        };
+        Ok(Reply {
+            status,
+            etag,
+            sha256,
+            api,
+            retry_after,
+            retried: 0,
+            body,
+        })
     }
 
     /// Sends with retries: transport errors, `429` (honouring `Retry-After`)
@@ -190,14 +229,25 @@ impl HttpRegistry {
                 }
                 // 2xx and 4xx must carry X-Fpkg-Api; a 304 may come from a cache
                 // that drops headers, a 5xx from in front of the Worker.
-                Ok(r) if (200..500).contains(&r.status) && r.status != 304 && r.api.as_deref() != Some(API_VERSION) => {
+                Ok(r)
+                    if (200..500).contains(&r.status)
+                        && r.status != 304
+                        && r.api.as_deref() != Some(API_VERSION) =>
+                {
                     let message = match r.api.as_deref() {
-                        None | Some("") => format!("the response (HTTP {}) has no X-Fpkg-Api header", r.status),
+                        None | Some("") => {
+                            format!("the response (HTTP {}) has no X-Fpkg-Api header", r.status)
+                        }
                         Some(got) => {
-                            format!("the registry speaks API version {got}, this fpkg speaks {API_VERSION}; upgrade fpkg")
+                            format!(
+                                "the registry speaks API version {got}, this fpkg speaks {API_VERSION}; upgrade fpkg"
+                            )
                         }
                     };
-                    return Err(RegistryError::BadApi { url: self.root.to_string(), message });
+                    return Err(RegistryError::BadApi {
+                        url: self.root.to_string(),
+                        message,
+                    });
                 }
                 Ok(mut r) => {
                     r.retried = attempt;
@@ -210,7 +260,12 @@ impl HttpRegistry {
         }
     }
 
-    fn get(&self, segments: &[&str], headers: &[(&str, String)], auth: Option<&Token>) -> Result<Reply> {
+    fn get(
+        &self,
+        segments: &[&str],
+        headers: &[(&str, String)],
+        auth: Option<&Token>,
+    ) -> Result<Reply> {
         self.request(Method::Get, self.endpoint(segments), headers, None, auth)
     }
 
@@ -223,7 +278,10 @@ impl HttpRegistry {
 fn retryable(e: &ureq::Error) -> bool {
     matches!(
         e,
-        ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::HostNotFound | ureq::Error::ConnectionFailed
+        ureq::Error::Io(_)
+            | ureq::Error::Timeout(_)
+            | ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
     )
 }
 
@@ -246,8 +304,12 @@ fn detail_text(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Object(o) => {
-            let field = ["field", "path", "name"].iter().find_map(|k| o.get(*k).and_then(|x| x.as_str()));
-            let msg = ["message", "reason", "error"].iter().find_map(|k| o.get(*k).and_then(|x| x.as_str()));
+            let field = ["field", "path", "name"]
+                .iter()
+                .find_map(|k| o.get(*k).and_then(|x| x.as_str()));
+            let msg = ["message", "reason", "error"]
+                .iter()
+                .find_map(|k| o.get(*k).and_then(|x| x.as_str()));
             match (field, msg) {
                 (Some(f), Some(m)) => format!("{f}: {m}"),
                 (None, Some(m)) => m.to_string(),
@@ -263,14 +325,30 @@ fn api_error(r: &Reply) -> RegistryError {
     let mut e = match serde_json::from_slice::<Envelope>(&r.body) {
         Ok(env) => ApiError::new(
             r.status,
-            if env.error.code.is_empty() { "unknown" } else { &env.error.code },
-            if env.error.message.is_empty() { format!("HTTP {}", r.status) } else { env.error.message },
+            if env.error.code.is_empty() {
+                "unknown"
+            } else {
+                &env.error.code
+            },
+            if env.error.message.is_empty() {
+                format!("HTTP {}", r.status)
+            } else {
+                env.error.message
+            },
         )
         .with_details(env.error.details.iter().map(detail_text).collect()),
         Err(_) => {
             let text = String::from_utf8_lossy(&r.body);
             let text: String = text.chars().take(200).collect();
-            ApiError::new(r.status, &format!("http_{}", r.status), if text.trim().is_empty() { format!("HTTP {}", r.status) } else { text })
+            ApiError::new(
+                r.status,
+                &format!("http_{}", r.status),
+                if text.trim().is_empty() {
+                    format!("HTTP {}", r.status)
+                } else {
+                    text
+                },
+            )
         }
     };
     e.retry_after = r.retry_after.as_deref().and_then(|s| s.trim().parse().ok());
@@ -278,7 +356,11 @@ fn api_error(r: &Reply) -> RegistryError {
 }
 
 fn ok_or_error(r: Reply) -> Result<Reply> {
-    if (200..300).contains(&r.status) || r.status == 304 { Ok(r) } else { Err(api_error(&r)) }
+    if (200..300).contains(&r.status) || r.status == 304 {
+        Ok(r)
+    } else {
+        Err(api_error(&r))
+    }
 }
 
 /// A `multipart/form-data` body with the `metadata` and `archive` parts.
@@ -287,7 +369,9 @@ fn multipart(meta: &[u8], archive: &[u8], filename: &str) -> (String, Vec<u8>) {
     let boundary = loop {
         let b = format!("fpkg-{}-{n}", &crate::sha256_hex(archive)[..24]);
         let needle = b.as_bytes();
-        if !archive.windows(needle.len()).any(|w| w == needle) && !meta.windows(needle.len()).any(|w| w == needle) {
+        if !archive.windows(needle.len()).any(|w| w == needle)
+            && !meta.windows(needle.len()).any(|w| w == needle)
+        {
             break b;
         }
         n += 1;
@@ -321,8 +405,17 @@ enum OwnerEntry {
 impl HttpRegistry {
     /// `GET /packages/{id}/versions/{v}`, with a token when the caller has one
     /// (a pending package answers only its owners and admins).
-    fn version_as(&self, id: &PackageId, v: &Version, auth: Option<&Token>) -> Result<Option<VersionMeta>> {
-        let r = self.get(&["packages", id.as_str(), "versions", &v.to_string()], &[], auth)?;
+    fn version_as(
+        &self,
+        id: &PackageId,
+        v: &Version,
+        auth: Option<&Token>,
+    ) -> Result<Option<VersionMeta>> {
+        let r = self.get(
+            &["packages", id.as_str(), "versions", &v.to_string()],
+            &[],
+            auth,
+        )?;
         if r.status == 404 {
             return Ok(None);
         }
@@ -335,12 +428,17 @@ impl Registry for HttpRegistry {
         match self.package_conditional(id, None)? {
             Conditional::Modified { doc, .. } => Ok(Some(doc)),
             Conditional::NotFound => Ok(None),
-            Conditional::NotModified => Err(RegistryError::Invalid("304 without If-None-Match".into())),
+            Conditional::NotModified => {
+                Err(RegistryError::Invalid("304 without If-None-Match".into()))
+            }
         }
     }
 
     fn package_conditional(&self, id: &PackageId, etag: Option<&str>) -> Result<Conditional> {
-        let headers: Vec<(&str, String)> = etag.map(|e| ("If-None-Match", e.to_string())).into_iter().collect();
+        let headers: Vec<(&str, String)> = etag
+            .map(|e| ("If-None-Match", e.to_string()))
+            .into_iter()
+            .collect();
         let r = self.get(&["packages", id.as_str()], &headers, None)?;
         match r.status {
             304 => Ok(Conditional::NotModified),
@@ -349,7 +447,10 @@ impl Registry for HttpRegistry {
                 let r = ok_or_error(r)?;
                 let doc: PackageDoc = self.json(&r)?;
                 if doc.id != id.as_str() {
-                    return Err(RegistryError::Invalid(format!("asked for package {id}, the registry sent {}", doc.id)));
+                    return Err(RegistryError::Invalid(format!(
+                        "asked for package {id}, the registry sent {}",
+                        doc.id
+                    )));
                 }
                 Ok(Conditional::Modified { doc, etag: r.etag })
             }
@@ -361,18 +462,33 @@ impl Registry for HttpRegistry {
     }
 
     fn archive(&self, id: &PackageId, v: &Version) -> Result<Vec<u8>> {
-        let r = ok_or_error(self.get(&["packages", id.as_str(), "versions", &v.to_string(), "archive"], &[], None)?)?;
+        let r = ok_or_error(self.get(
+            &[
+                "packages",
+                id.as_str(),
+                "versions",
+                &v.to_string(),
+                "archive",
+            ],
+            &[],
+            None,
+        )?)?;
         let actual = crate::sha256_hex(&r.body);
         if let Some(expected) = &r.sha256
             && !expected.trim().eq_ignore_ascii_case(&actual)
         {
-            return Err(RegistryError::Checksum { what: format!("{id} {v} (X-Fpkg-Sha256)"), expected: expected.clone(), actual });
+            return Err(RegistryError::Checksum {
+                what: format!("{id} {v} (X-Fpkg-Sha256)"),
+                expected: expected.clone(),
+                actual,
+            });
         }
         Ok(r.body)
     }
 
     fn publish(&self, meta: &VersionMeta, archive: &[u8], auth: &Token) -> Result<Published> {
-        let json = serde_json::to_vec(&meta.for_publish()).map_err(|e| RegistryError::Invalid(e.to_string()))?;
+        let json = serde_json::to_vec(&meta.for_publish())
+            .map_err(|e| RegistryError::Invalid(e.to_string()))?;
         let body = multipart(&json, archive, &format!("{}-{}.zip", meta.id, meta.version));
         let u = self.endpoint(&["packages", &meta.id, "versions", &meta.version]);
         let r = self.request(Method::Put, u, &[], Some(body), Some(auth))?;
@@ -384,7 +500,10 @@ impl Registry for HttpRegistry {
             let sha = crate::sha256_hex(archive);
             if let (Ok(id), Ok(v)) = (meta.package_id(), meta.parsed_version())
                 && let Ok(Some(existing)) = self.version_as(&id, &v, Some(auth))
-                && existing.dist.as_ref().is_some_and(|d| d.sha256.eq_ignore_ascii_case(&sha))
+                && existing
+                    .dist
+                    .as_ref()
+                    .is_some_and(|d| d.sha256.eq_ignore_ascii_case(&sha))
             {
                 let pending = self
                     .get(&["packages", id.as_str()], &[], Some(auth))
@@ -392,12 +511,18 @@ impl Registry for HttpRegistry {
                     .filter(|r| r.status == 200)
                     .and_then(|r| self.json::<PackageDoc>(&r).ok())
                     .is_some_and(|doc| doc.status.as_deref() == Some("pending"));
-                return Ok(Published { meta: existing, pending });
+                return Ok(Published {
+                    meta: existing,
+                    pending,
+                });
             }
         }
         // 202: stored, but the package waits for an admin's approval.
         let pending = r.status == 202;
-        Ok(Published { meta: self.json(&ok_or_error(r)?)?, pending })
+        Ok(Published {
+            meta: self.json(&ok_or_error(r)?)?,
+            pending,
+        })
     }
 
     fn yank(&self, id: &PackageId, v: &Version, yanked: bool, auth: &Token) -> Result<()> {
@@ -451,10 +576,16 @@ mod tests {
     fn roots_and_endpoints() {
         let r = HttpRegistry::new("https://fluxpkg.dev", &NetOptions::default()).unwrap();
         assert_eq!(r.url(), "https://fluxpkg.dev/");
-        assert_eq!(r.endpoint(&["packages", "cable"]).as_str(), "https://fluxpkg.dev/api/v1/packages/cable");
+        assert_eq!(
+            r.endpoint(&["packages", "cable"]).as_str(),
+            "https://fluxpkg.dev/api/v1/packages/cable"
+        );
         let r = HttpRegistry::new("http://127.0.0.1:8787/api/v1/", &NetOptions::default()).unwrap();
         assert_eq!(r.url(), "http://127.0.0.1:8787/");
-        assert!(matches!(HttpRegistry::new("http://example.com/", &NetOptions::default()), Err(RegistryError::Insecure(_))));
+        assert!(matches!(
+            HttpRegistry::new("http://example.com/", &NetOptions::default()),
+            Err(RegistryError::Insecure(_))
+        ));
         assert!(HttpRegistry::new("http://localhost:8787/", &NetOptions::default()).is_ok());
     }
 

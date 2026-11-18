@@ -8,7 +8,8 @@ use std::path::Path;
 use zip::{CompressionMethod, ZipArchive};
 
 use super::{
-    ArchiveError, MARKER, MAX_COMPRESSED, MAX_MEMBERS, MAX_RATIO, MAX_UNCOMPRESSED, check_member_path,
+    ArchiveError, MARKER, MAX_COMPRESSED, MAX_MEMBERS, MAX_RATIO, MAX_UNCOMPRESSED,
+    check_member_path,
 };
 use crate::spec::SPEC_FILE;
 
@@ -30,7 +31,12 @@ fn u16_at(b: &[u8], i: usize) -> Option<u16> {
 }
 
 fn u32_at(b: &[u8], i: usize) -> Option<u32> {
-    Some(u32::from_le_bytes([*b.get(i)?, *b.get(i + 1)?, *b.get(i + 2)?, *b.get(i + 3)?]))
+    Some(u32::from_le_bytes([
+        *b.get(i)?,
+        *b.get(i + 1)?,
+        *b.get(i + 2)?,
+        *b.get(i + 3)?,
+    ]))
 }
 
 /// The member names as the central directory lists them, read directly:
@@ -62,7 +68,9 @@ fn central_directory_names(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ArchiveError> {
         let n = u16_at(bytes, pos + 28).ok_or_else(|| bad("truncated central directory"))? as usize;
         let e = u16_at(bytes, pos + 30).ok_or_else(|| bad("truncated central directory"))? as usize;
         let c = u16_at(bytes, pos + 32).ok_or_else(|| bad("truncated central directory"))? as usize;
-        let name = bytes.get(pos + 46..pos + 46 + n).ok_or_else(|| bad("truncated central directory"))?;
+        let name = bytes
+            .get(pos + 46..pos + 46 + n)
+            .ok_or_else(|| bad("truncated central directory"))?;
         names.push(name.to_vec());
         pos += 46 + n + e + c;
     }
@@ -73,7 +81,11 @@ fn central_directory_names(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ArchiveError> {
 /// the `<id>/` prefix, regular files only, ratios, and `<id>/packagespec.lua`.
 pub fn validate(bytes: &[u8], id: &str) -> Result<Vec<EntryInfo>, ArchiveError> {
     if bytes.len() as u64 > MAX_COMPRESSED {
-        return Err(ArchiveError::TooLarge { what: "the archive".into(), size: bytes.len() as u64, limit: MAX_COMPRESSED });
+        return Err(ArchiveError::TooLarge {
+            what: "the archive".into(),
+            size: bytes.len() as u64,
+            limit: MAX_COMPRESSED,
+        });
     }
     let raw = central_directory_names(bytes)?;
     if raw.len() > MAX_MEMBERS {
@@ -82,12 +94,18 @@ pub fn validate(bytes: &[u8], id: &str) -> Result<Vec<EntryInfo>, ArchiveError> 
     let mut lower = HashSet::new();
     for name in &raw {
         if !lower.insert(String::from_utf8_lossy(name).to_lowercase()) {
-            return Err(ArchiveError::Duplicate(String::from_utf8_lossy(name).into_owned()));
+            return Err(ArchiveError::Duplicate(
+                String::from_utf8_lossy(name).into_owned(),
+            ));
         }
     }
     let mut zip = ZipArchive::new(Cursor::new(bytes))?;
     if zip.len() != raw.len() {
-        return Err(ArchiveError::Zip(format!("the central directory lists {} members, the archive holds {}", raw.len(), zip.len())));
+        return Err(ArchiveError::Zip(format!(
+            "the central directory lists {} members, the archive holds {}",
+            raw.len(),
+            zip.len()
+        )));
     }
     let prefix = format!("{id}/");
     let spec = format!("{id}/{SPEC_FILE}");
@@ -104,26 +122,43 @@ pub fn validate(bytes: &[u8], id: &str) -> Result<Vec<EntryInfo>, ArchiveError> 
             })?
             .to_string();
         if path.ends_with('/') || f.is_dir() {
-            return Err(ArchiveError::NonRegularEntry { path, reason: "a directory entry".into() });
+            return Err(ArchiveError::NonRegularEntry {
+                path,
+                reason: "a directory entry".into(),
+            });
         }
         check_member_path(&path)?;
         if !path.starts_with(&prefix) {
             return Err(ArchiveError::WrongPrefix { path, prefix });
         }
         if f.is_symlink() {
-            return Err(ArchiveError::NonRegularEntry { path, reason: "a symlink".into() });
+            return Err(ArchiveError::NonRegularEntry {
+                path,
+                reason: "a symlink".into(),
+            });
         }
         if let Some(mode) = f.unix_mode()
             && mode & S_IFMT != 0
             && mode & S_IFMT != S_IFREG
         {
-            return Err(ArchiveError::NonRegularEntry { path, reason: format!("of file type {:o}", mode & S_IFMT) });
+            return Err(ArchiveError::NonRegularEntry {
+                path,
+                reason: format!("of file type {:o}", mode & S_IFMT),
+            });
         }
         if f.encrypted() {
-            return Err(ArchiveError::NonRegularEntry { path, reason: "encrypted".into() });
+            return Err(ArchiveError::NonRegularEntry {
+                path,
+                reason: "encrypted".into(),
+            });
         }
-        if !matches!(f.compression(), CompressionMethod::Stored | CompressionMethod::Deflated) {
-            return Err(ArchiveError::Zip(format!("member '{path}' uses an unsupported compression method")));
+        if !matches!(
+            f.compression(),
+            CompressionMethod::Stored | CompressionMethod::Deflated
+        ) {
+            return Err(ArchiveError::Zip(format!(
+                "member '{path}' uses an unsupported compression method"
+            )));
         }
         if !seen.insert(path.to_lowercase()) {
             return Err(ArchiveError::Duplicate(path));
@@ -131,16 +166,28 @@ pub fn validate(bytes: &[u8], id: &str) -> Result<Vec<EntryInfo>, ArchiveError> 
         let size = f.size();
         let compressed = f.compressed_size();
         if size >= MAX_RATIO * compressed.max(1) && size > 0 {
-            return Err(ArchiveError::Ratio { path, ratio: size / compressed.max(1) });
+            return Err(ArchiveError::Ratio {
+                path,
+                ratio: size / compressed.max(1),
+            });
         }
         total = total.saturating_add(size);
         if total > MAX_UNCOMPRESSED {
-            return Err(ArchiveError::TooLarge { what: "the archive uncompressed".into(), size: total, limit: MAX_UNCOMPRESSED });
+            return Err(ArchiveError::TooLarge {
+                what: "the archive uncompressed".into(),
+                size: total,
+                limit: MAX_UNCOMPRESSED,
+            });
         }
         if path == spec {
             has_spec = true;
         }
-        entries.push(EntryInfo { index, path, size, compressed });
+        entries.push(EntryInfo {
+            index,
+            path,
+            size,
+            compressed,
+        });
     }
     if !has_spec {
         return Err(ArchiveError::MissingSpec(spec));
@@ -160,7 +207,10 @@ fn read_all(bytes: &[u8], entries: &[EntryInfo]) -> Result<Vec<(String, Vec<u8>)
             .read_to_end(&mut data)
             .map_err(|err| ArchiveError::Zip(format!("member '{}': {err}", e.path)))?;
         if data.len() as u64 != e.size {
-            return Err(ArchiveError::Zip(format!("member '{}' does not have its declared size", e.path)));
+            return Err(ArchiveError::Zip(format!(
+                "member '{}' does not have its declared size",
+                e.path
+            )));
         }
         out.push((e.path.clone(), data));
     }
@@ -203,7 +253,14 @@ pub fn unpack(
     packages_dir: &Path,
     marker: Option<&str>,
 ) -> Result<(), ArchiveError> {
-    unpack_checked(bytes, id, expected_sha256, packages_dir, marker, &|_| Ok(()))
+    unpack_checked(
+        bytes,
+        id,
+        expected_sha256,
+        packages_dir,
+        marker,
+        &|_| Ok(()),
+    )
 }
 
 /// `unpack` with a last check of the staged directory (`<tmp>/<id>`) before
@@ -218,7 +275,10 @@ pub fn unpack_checked(
 ) -> Result<(), ArchiveError> {
     let actual = crate::sha256_hex(bytes);
     if !actual.eq_ignore_ascii_case(expected_sha256) {
-        return Err(ArchiveError::Checksum { expected: expected_sha256.to_string(), actual });
+        return Err(ArchiveError::Checksum {
+            expected: expected_sha256.to_string(),
+            actual,
+        });
     }
     validate(bytes, id)?;
     let tmp = packages_dir.join(format!(".fpkg-tmp-{id}"));

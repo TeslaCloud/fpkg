@@ -39,15 +39,23 @@ pub fn assigned_literals(source: &str, field: &str) -> Vec<String> {
             i = quoted(b, i).map(|(_, e)| e).unwrap_or(b.len());
             continue;
         }
-        if c == b'[' && let Some((_, end)) = long_bracket(b, i) {
+        if c == b'['
+            && let Some((_, end)) = long_bracket(b, i)
+        {
             i = end;
             continue;
         }
         // `.field` followed by `=` (not `==`) and a literal.
         if c == b'.' && b[i + 1..].starts_with(field.as_bytes()) {
             let after = i + 1 + field.len();
-            let ident_end = b.get(after).is_none_or(|x| !(x.is_ascii_alphanumeric() || *x == b'_'));
-            let prev_ok = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_' || b[i - 1] == b']' || b[i - 1] == b')');
+            let ident_end = b
+                .get(after)
+                .is_none_or(|x| !(x.is_ascii_alphanumeric() || *x == b'_'));
+            let prev_ok = i > 0
+                && (b[i - 1].is_ascii_alphanumeric()
+                    || b[i - 1] == b'_'
+                    || b[i - 1] == b']'
+                    || b[i - 1] == b')');
             if ident_end && prev_ok {
                 let mut j = skip_ws(b, after);
                 if b.get(j) == Some(&b'=') && b.get(j + 1) != Some(&b'=') {
@@ -140,13 +148,18 @@ fn long_bracket(b: &[u8], i: usize) -> Option<(String, usize)> {
     close.extend(std::iter::repeat_n(b'=', level));
     close.push(b']');
     let rest = &b[start..];
-    let pos = rest.windows(close.len()).position(|w| w == close.as_slice())?;
+    let pos = rest
+        .windows(close.len())
+        .position(|w| w == close.as_slice())?;
     let mut content = &rest[..pos];
     // A newline right after the opening bracket is not part of the string.
     if content.first() == Some(&b'\n') {
         content = &content[1..];
     }
-    Some((String::from_utf8_lossy(content).into_owned(), start + pos + close.len()))
+    Some((
+        String::from_utf8_lossy(content).into_owned(),
+        start + pos + close.len(),
+    ))
 }
 
 #[cfg(test)]
@@ -157,10 +170,22 @@ mod tests {
     fn finds_literals() {
         let src = "-- s.version = '9.9.9'\n/* s.version = '8' */\nPackage:describe(function(s)\n  s.name        = \"Srlion's Fast Serializer\"\n  s.version     = '7.0.9'\n  s.summary = 'x.version = 1'\n  if s.version == '1' then end\n  t.name=[[Long\nName]]\nend)";
         assert_eq!(assigned_literals(src, "version"), vec!["7.0.9"]);
-        assert_eq!(assigned_literals(src, "name"), vec!["Srlion's Fast Serializer", "Long\nName"]);
-        assert_eq!(assigned_literals("s.version = get()", "version"), Vec::<String>::new());
-        assert_eq!(assigned_literals("s.versions = '1'", "version"), Vec::<String>::new());
+        assert_eq!(
+            assigned_literals(src, "name"),
+            vec!["Srlion's Fast Serializer", "Long\nName"]
+        );
+        assert_eq!(
+            assigned_literals("s.version = get()", "version"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            assigned_literals("s.versions = '1'", "version"),
+            Vec::<String>::new()
+        );
         assert_eq!(assigned_literals("s.name = 'a\\'b'", "name"), vec!["a'b"]);
-        assert_eq!(assigned_literals("s.name = [==[x]]y]==]", "name"), vec!["x]]y"]);
+        assert_eq!(
+            assigned_literals("s.name = [==[x]]y]==]", "name"),
+            vec!["x]]y"]
+        );
     }
 }

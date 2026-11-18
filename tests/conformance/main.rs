@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use fpkg_core::archive::{self, PackOptions};
 use fpkg_core::registry::{
-    ApiErrorKind, Conditional, FileRegistry, HttpRegistry, NetOptions, Registry, RegistryError, Token, VersionMeta,
+    ApiErrorKind, Conditional, FileRegistry, HttpRegistry, NetOptions, Registry, RegistryError,
+    Token, VersionMeta,
 };
 use fpkg_core::spec::{self, Env, SpecLocation};
 use fpkg_core::{PackageId, Version};
@@ -24,7 +25,10 @@ struct Target {
 }
 
 fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/flux-ce").canonicalize().unwrap()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/flux-ce")
+        .canonicalize()
+        .unwrap()
 }
 
 /// A package directory, its evaluated metadata under `id`, and its archive.
@@ -54,10 +58,17 @@ fn fixture(dir: &Path, id: &str, deps: &[(&str, &str)]) -> Fixture {
     meta.id = id.to_string();
     meta.dependencies = deps
         .iter()
-        .map(|(d, c)| fpkg_core::registry::DepMeta { id: d.to_string(), constraint: c.to_string() })
+        .map(|(d, c)| fpkg_core::registry::DepMeta {
+            id: d.to_string(),
+            constraint: c.to_string(),
+        })
         .collect();
     let packed = archive::pack(dir, id, &PackOptions::default()).unwrap();
-    Fixture { meta, sha256: packed.sha256.clone(), bytes: packed.bytes }
+    Fixture {
+        meta,
+        sha256: packed.sha256.clone(),
+        bytes: packed.bytes,
+    }
 }
 
 /// A copy of a fixture package with its version literal changed.
@@ -76,14 +87,29 @@ fn with_version(src: &Path, version: &str, scratch: &Path) -> PathBuf {
     }
     let spec = dir.join("packagespec.lua");
     let text = std::fs::read_to_string(&spec).unwrap();
-    let re = text.lines().find(|l| l.trim_start().starts_with("s.version")).unwrap().to_string();
-    std::fs::write(&spec, text.replace(&re, &format!("  s.version     = '{version}'"))).unwrap();
+    let re = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("s.version"))
+        .unwrap()
+        .to_string();
+    std::fs::write(
+        &spec,
+        text.replace(&re, &format!("  s.version     = '{version}'")),
+    )
+    .unwrap();
     dir
 }
 
 fn tag() -> String {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    format!("c{:x}{:x}", (nanos & 0xffff_ffff_ffff) as u64, std::process::id() & 0xfff)
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!(
+        "c{:x}{:x}",
+        (nanos & 0xffff_ffff_ffff) as u64,
+        std::process::id() & 0xfff
+    )
 }
 
 fn pid(s: &str) -> PackageId {
@@ -95,7 +121,11 @@ fn v(s: &str) -> Version {
 }
 
 #[track_caller]
-fn expect_status<T: std::fmt::Debug>(r: Result<T, RegistryError>, statuses: &[u16], what: &str) -> RegistryError {
+fn expect_status<T: std::fmt::Debug>(
+    r: Result<T, RegistryError>,
+    statuses: &[u16],
+    what: &str,
+) -> RegistryError {
     match r {
         Ok(x) => panic!("{what}: expected HTTP {statuses:?}, got success {x:?}"),
         Err(e) => {
@@ -103,7 +133,10 @@ fn expect_status<T: std::fmt::Debug>(r: Result<T, RegistryError>, statuses: &[u1
                 e.status().is_some_and(|s| statuses.contains(&s)),
                 "{what}: expected HTTP {statuses:?}, got {e:?}"
             );
-            assert!(e.code().is_some_and(|c| !c.is_empty()), "{what}: the error envelope has no code: {e:?}");
+            assert!(
+                e.code().is_some_and(|c| !c.is_empty()),
+                "{what}: the error envelope has no code: {e:?}"
+            );
             e
         }
     }
@@ -128,64 +161,127 @@ fn scenario(t: &Target) {
 
     // Unknown packages.
     let unknown = pid(&format!("{tag}_nothing"));
-    assert_eq!(r.package(&unknown).unwrap(), None, "GET /packages/<unknown> is 404 -> None");
+    assert_eq!(
+        r.package(&unknown).unwrap(),
+        None,
+        "GET /packages/<unknown> is 404 -> None"
+    );
     assert_eq!(r.version(&unknown, &v("1.0.0")).unwrap(), None);
-    let e = expect_status(r.archive(&unknown, &v("1.0.0")), &[404], "archive of an unknown package");
+    let e = expect_status(
+        r.archive(&unknown, &v("1.0.0")),
+        &[404],
+        "archive of an unknown package",
+    );
     assert_eq!(e.code(), Some("not_found"));
     assert_eq!(e.kind(), Some(ApiErrorKind::NotFound));
     expect_status(r.owners(&unknown), &[404], "owners of an unknown package");
 
     // A dependency that does not exist: 422 with details.
-    let e = expect_status(r.publish(&cable.meta, &cable.bytes, &t.token), &[422], "publish with a missing dependency");
+    let e = expect_status(
+        r.publish(&cable.meta, &cable.bytes, &t.token),
+        &[422],
+        "publish with a missing dependency",
+    );
     assert!(!e.details().is_empty(), "422 without details[]: {e:?}");
-    assert!(e.details().iter().any(|d| d.contains(&sfs_id)), "details do not name the dependency: {e:?}");
+    assert!(
+        e.details().iter().any(|d| d.contains(&sfs_id)),
+        "details do not name the dependency: {e:?}"
+    );
 
     // Publish, then 409 on republish.
-    let published = r.publish(&sfs.meta, &sfs.bytes, &t.token).expect("publish sfs 7.0.9");
+    let published = r
+        .publish(&sfs.meta, &sfs.bytes, &t.token)
+        .expect("publish sfs 7.0.9");
     // A registry that holds new packages for approval answers 202; the rest of the scenario
     // reads the package back, so the token must belong to an admin there.
-    assert!(!published.pending, "publish sfs 7.0.9: the package awaits approval; run the suite with an admin's token");
+    assert!(
+        !published.pending,
+        "publish sfs 7.0.9: the package awaits approval; run the suite with an admin's token"
+    );
     let published = published.meta;
     assert_eq!(published.id, sfs_id);
     assert_eq!(published.version, "7.0.9");
     assert_eq!(published.name, "Srlion's Fast Serializer");
     assert!(!published.yanked);
-    let dist = published.dist.as_ref().expect("the publish response has dist");
+    let dist = published
+        .dist
+        .as_ref()
+        .expect("the publish response has dist");
     assert_eq!(dist.sha256, sfs.sha256);
     assert_eq!(dist.size, sfs.bytes.len() as u64);
     assert!(!dist.url.is_empty());
-    expect_status(r.publish(&sfs.meta, &sfs.bytes, &t.token), &[409], "republish of sfs 7.0.9");
+    expect_status(
+        r.publish(&sfs.meta, &sfs.bytes, &t.token),
+        &[409],
+        "republish of sfs 7.0.9",
+    );
 
     let mut cable_meta = cable.meta.clone();
-    let published = r.publish(&cable_meta, &cable.bytes, &t.token).expect("publish cable 1.0.0").meta;
+    let published = r
+        .publish(&cable_meta, &cable.bytes, &t.token)
+        .expect("publish cable 1.0.0")
+        .meta;
     assert_eq!(published.dependencies.len(), 1);
     assert_eq!(published.dependencies[0].id, sfs_id);
     assert_eq!(published.dependencies[0].constraint, "~> 7.0");
-    r.publish(&sfs71.meta, &sfs71.bytes, &t.token).expect("publish sfs 7.1.0");
+    r.publish(&sfs71.meta, &sfs71.bytes, &t.token)
+        .expect("publish sfs 7.1.0");
 
     // 422: the archive and the request disagree.
     let mut wrong_version = sfs71.meta.clone();
     wrong_version.version = "7.2.0".into();
-    let e = expect_status(r.publish(&wrong_version, &sfs71.bytes, &t.token), &[422], "version literal mismatch");
+    let e = expect_status(
+        r.publish(&wrong_version, &sfs71.bytes, &t.token),
+        &[422],
+        "version literal mismatch",
+    );
     assert!(!e.details().is_empty(), "{e:?}");
     let mut wrong_name = sfs71.meta.clone();
     wrong_name.version = "7.3.0".into();
-    let sfs73 = fixture(&with_version(&packages.join("sfs"), "7.3.0", &scratch.path().join("b")), &sfs_id, &[]);
+    let sfs73 = fixture(
+        &with_version(&packages.join("sfs"), "7.3.0", &scratch.path().join("b")),
+        &sfs_id,
+        &[],
+    );
     wrong_name.name = "Not The Name".into();
-    let e = expect_status(r.publish(&wrong_name, &sfs73.bytes, &t.token), &[422], "name literal mismatch");
+    let e = expect_status(
+        r.publish(&wrong_name, &sfs73.bytes, &t.token),
+        &[422],
+        "name literal mismatch",
+    );
     assert!(!e.details().is_empty(), "{e:?}");
-    let other_prefix = archive::pack(&packages.join("sfs"), &format!("{tag}_other"), &PackOptions::default()).unwrap();
+    let other_prefix = archive::pack(
+        &packages.join("sfs"),
+        &format!("{tag}_other"),
+        &PackOptions::default(),
+    )
+    .unwrap();
     let mut meta73 = sfs73.meta.clone();
     meta73.version = "7.3.0".into();
-    let e = expect_status(r.publish(&meta73, &other_prefix.bytes, &t.token), &[422], "members outside <id>/");
+    let e = expect_status(
+        r.publish(&meta73, &other_prefix.bytes, &t.token),
+        &[422],
+        "members outside <id>/",
+    );
     assert!(!e.details().is_empty(), "{e:?}");
-    let e = expect_status(r.publish(&meta73, b"not a zip at all", &t.token), &[400, 422], "an archive that is not a zip");
+    let e = expect_status(
+        r.publish(&meta73, b"not a zip at all", &t.token),
+        &[400, 422],
+        "an archive that is not a zip",
+    );
     if e.status() == Some(422) {
         assert!(!e.details().is_empty(), "{e:?}");
     }
     let mut bad_dep = meta73.clone();
-    bad_dep.dependencies = vec![fpkg_core::registry::DepMeta { id: sfs_id.clone(), constraint: "bogus".into() }];
-    expect_status(r.publish(&bad_dep, &sfs73.bytes, &t.token), &[400, 422], "an invalid constraint");
+    bad_dep.dependencies = vec![fpkg_core::registry::DepMeta {
+        id: sfs_id.clone(),
+        constraint: "bogus".into(),
+    }];
+    expect_status(
+        r.publish(&bad_dep, &sfs73.bytes, &t.token),
+        &[400, 422],
+        "an invalid constraint",
+    );
 
     // Read back.
     let doc = r.package(&pid(&sfs_id)).unwrap().expect("package document");
@@ -199,51 +295,101 @@ fn scenario(t: &Target) {
     assert_eq!(m.kind, "package");
     assert_eq!(m.published_by.as_deref(), Some(me.login.as_str()));
     assert!(m.published_at.is_some());
-    let one = r.version(&pid(&sfs_id), &v("7.0.9")).unwrap().expect("version metadata");
+    let one = r
+        .version(&pid(&sfs_id), &v("7.0.9"))
+        .unwrap()
+        .expect("version metadata");
     assert_eq!(one.dist.as_ref().unwrap().sha256, sfs.sha256);
     assert_eq!(one.authors, vec!["Srlion"]);
     let bytes = r.archive(&pid(&sfs_id), &v("7.0.9")).unwrap();
     assert_eq!(bytes, sfs.bytes, "the archive comes back byte for byte");
     assert_eq!(r.version(&pid(&sfs_id), &v("9.9.9")).unwrap(), None);
-    expect_status(r.archive(&pid(&sfs_id), &v("9.9.9")), &[404], "archive of an unknown version");
+    expect_status(
+        r.archive(&pid(&sfs_id), &v("9.9.9")),
+        &[404],
+        "archive of an unknown version",
+    );
 
     // ETag and 304.
     let (doc1, etag1) = match r.package_conditional(&pid(&sfs_id), None).unwrap() {
-        Conditional::Modified { doc, etag } => (doc, etag.expect("the package document has an ETag")),
+        Conditional::Modified { doc, etag } => {
+            (doc, etag.expect("the package document has an ETag"))
+        }
         other => panic!("expected 200, got {other:?}"),
     };
     assert_eq!(doc1.revision, doc.revision);
-    assert!(matches!(r.package_conditional(&pid(&sfs_id), Some(&etag1)).unwrap(), Conditional::NotModified), "If-None-Match with the current ETag is 304");
-    assert!(matches!(r.package_conditional(&pid(&sfs_id), Some("\"stale\"")).unwrap(), Conditional::Modified { .. }));
-    assert!(matches!(r.package_conditional(&unknown, Some(&etag1)).unwrap(), Conditional::NotFound));
+    assert!(
+        matches!(
+            r.package_conditional(&pid(&sfs_id), Some(&etag1)).unwrap(),
+            Conditional::NotModified
+        ),
+        "If-None-Match with the current ETag is 304"
+    );
+    assert!(matches!(
+        r.package_conditional(&pid(&sfs_id), Some("\"stale\""))
+            .unwrap(),
+        Conditional::Modified { .. }
+    ));
+    assert!(matches!(
+        r.package_conditional(&unknown, Some(&etag1)).unwrap(),
+        Conditional::NotFound
+    ));
 
     // Yank and unyank.
-    r.yank(&pid(&sfs_id), &v("7.1.0"), true, &t.token).expect("yank 7.1.0");
+    r.yank(&pid(&sfs_id), &v("7.1.0"), true, &t.token)
+        .expect("yank 7.1.0");
     let yanked = r.package(&pid(&sfs_id)).unwrap().unwrap();
     assert!(yanked.versions["7.1.0"].yanked);
-    assert_eq!(yanked.latest.as_deref(), Some("7.0.9"), "latest skips yanked versions");
+    assert_eq!(
+        yanked.latest.as_deref(),
+        Some("7.0.9"),
+        "latest skips yanked versions"
+    );
     assert!(yanked.revision > doc.revision, "a yank bumps the revision");
     let etag2 = match r.package_conditional(&pid(&sfs_id), Some(&etag1)).unwrap() {
         Conditional::Modified { etag, .. } => etag.unwrap(),
         other => panic!("after a yank the old ETag must not match: {other:?}"),
     };
     assert_ne!(etag1, etag2);
-    assert!(r.version(&pid(&sfs_id), &v("7.1.0")).unwrap().unwrap().yanked);
-    assert_eq!(r.archive(&pid(&sfs_id), &v("7.1.0")).unwrap(), sfs71.bytes, "yanked versions stay downloadable");
-    r.yank(&pid(&sfs_id), &v("7.1.0"), false, &t.token).expect("unyank 7.1.0");
+    assert!(
+        r.version(&pid(&sfs_id), &v("7.1.0"))
+            .unwrap()
+            .unwrap()
+            .yanked
+    );
+    assert_eq!(
+        r.archive(&pid(&sfs_id), &v("7.1.0")).unwrap(),
+        sfs71.bytes,
+        "yanked versions stay downloadable"
+    );
+    r.yank(&pid(&sfs_id), &v("7.1.0"), false, &t.token)
+        .expect("unyank 7.1.0");
     let back = r.package(&pid(&sfs_id)).unwrap().unwrap();
     assert!(!back.versions["7.1.0"].yanked);
     assert_eq!(back.latest.as_deref(), Some("7.1.0"));
-    expect_status(r.yank(&pid(&sfs_id), &v("9.9.9"), true, &t.token), &[404], "yank of an unknown version");
+    expect_status(
+        r.yank(&pid(&sfs_id), &v("9.9.9"), true, &t.token),
+        &[404],
+        "yank of an unknown version",
+    );
 
     // Owners.
     assert_eq!(r.owners(&pid(&sfs_id)).unwrap(), vec![me.login.clone()]);
-    let e = expect_status(r.set_owner(&pid(&sfs_id), &me.login, false, &t.token), &[400, 403, 409, 422], "removing the last owner");
+    let e = expect_status(
+        r.set_owner(&pid(&sfs_id), &me.login, false, &t.token),
+        &[400, 403, 409, 422],
+        "removing the last owner",
+    );
     assert_ne!(e.kind(), Some(ApiErrorKind::NotFound));
     assert_eq!(r.owners(&pid(&sfs_id)).unwrap(), vec![me.login.clone()]);
     if t.knows_users {
         expect_status(
-            r.set_owner(&pid(&sfs_id), &format!("{tag}-no-such-user"), true, &t.token),
+            r.set_owner(
+                &pid(&sfs_id),
+                &format!("{tag}-no-such-user"),
+                true,
+                &t.token,
+            ),
             &[404, 422],
             "adding an unknown user as owner",
         );
@@ -252,20 +398,37 @@ fn scenario(t: &Target) {
         let before = r.package(&pid(&sfs_id)).unwrap().unwrap().revision;
         r.set_owner(&pid(&sfs_id), &friend, true, &t.token).unwrap();
         assert!(r.owners(&pid(&sfs_id)).unwrap().contains(&friend));
-        assert!(r.package(&pid(&sfs_id)).unwrap().unwrap().revision > before, "owner changes bump the revision");
-        r.set_owner(&pid(&sfs_id), &friend, false, &t.token).unwrap();
+        assert!(
+            r.package(&pid(&sfs_id)).unwrap().unwrap().revision > before,
+            "owner changes bump the revision"
+        );
+        r.set_owner(&pid(&sfs_id), &friend, false, &t.token)
+            .unwrap();
         assert_eq!(r.owners(&pid(&sfs_id)).unwrap(), vec![me.login.clone()]);
     }
 
     // Search: prefix and substring on id, name and summary.
     let page = r.search(&tag, 1).unwrap();
     let ids: Vec<&str> = page.packages.iter().map(|h| h.id.as_str()).collect();
-    assert!(ids.contains(&sfs_id.as_str()) && ids.contains(&cable_id.as_str()), "search {tag}: {ids:?}");
+    assert!(
+        ids.contains(&sfs_id.as_str()) && ids.contains(&cable_id.as_str()),
+        "search {tag}: {ids:?}"
+    );
     let hit = page.packages.iter().find(|h| h.id == sfs_id).unwrap();
-    assert_eq!(hit.version.as_deref(), Some("7.1.0"), "search shows the newest version");
+    assert_eq!(
+        hit.version.as_deref(),
+        Some("7.1.0"),
+        "search shows the newest version"
+    );
     assert_eq!(hit.name, "Srlion's Fast Serializer");
     let page = r.search(&format!("{tag}_cab"), 1).unwrap();
-    assert_eq!(page.packages.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec![cable_id.as_str()]);
+    assert_eq!(
+        page.packages
+            .iter()
+            .map(|h| h.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![cable_id.as_str()]
+    );
     let page = r.search(&format!("{tag}zzz-nothing"), 1).unwrap();
     assert!(page.packages.is_empty());
     let far = r.search(&tag, 50).unwrap();
@@ -276,9 +439,21 @@ fn scenario(t: &Target) {
         let bad = Token::new("fpk_invalid_conformance_token");
         expect_status(r.me(&bad), &[401], "GET /me with a bad token");
         cable_meta.version = "1.0.1".into();
-        expect_status(r.publish(&cable_meta, &cable.bytes, &bad), &[401], "publish with a bad token");
-        expect_status(r.yank(&pid(&sfs_id), &v("7.0.9"), true, &bad), &[401], "yank with a bad token");
-        expect_status(r.set_owner(&pid(&sfs_id), "someone", true, &bad), &[401], "owner add with a bad token");
+        expect_status(
+            r.publish(&cable_meta, &cable.bytes, &bad),
+            &[401],
+            "publish with a bad token",
+        );
+        expect_status(
+            r.yank(&pid(&sfs_id), &v("7.0.9"), true, &bad),
+            &[401],
+            "yank with a bad token",
+        );
+        expect_status(
+            r.set_owner(&pid(&sfs_id), "someone", true, &bad),
+            &[401],
+            "owner add with a bad token",
+        );
         assert!(!r.package(&pid(&sfs_id)).unwrap().unwrap().versions["7.0.9"].yanked);
     }
     println!("[{}] conformance scenario passed", t.name);
@@ -299,11 +474,19 @@ fn file_registry() {
 
 #[test]
 fn http_registry() {
-    let (Ok(url), Ok(token)) = (std::env::var("FPKG_TEST_REGISTRY"), std::env::var("FPKG_TOKEN")) else {
-        println!("note: FPKG_TEST_REGISTRY and FPKG_TOKEN are not both set; skipping the HTTP conformance run");
+    let (Ok(url), Ok(token)) = (
+        std::env::var("FPKG_TEST_REGISTRY"),
+        std::env::var("FPKG_TOKEN"),
+    ) else {
+        println!(
+            "note: FPKG_TEST_REGISTRY and FPKG_TOKEN are not both set; skipping the HTTP conformance run"
+        );
         return;
     };
-    let net = NetOptions { retries: 1, timeout: std::time::Duration::from_secs(60) };
+    let net = NetOptions {
+        retries: 1,
+        timeout: std::time::Duration::from_secs(60),
+    };
     let reg = HttpRegistry::new(&url, &net).expect("FPKG_TEST_REGISTRY");
     println!("conformance against {url}");
     scenario(&Target {
@@ -321,11 +504,18 @@ fn http_registry() {
 fn http_registry_against_reference_server() {
     let dir = tempfile::tempdir().unwrap();
     let server = mock_registry::MockRegistry::start(dir.path(), "conformance", "fpk_mock_token");
-    let net = NetOptions { retries: 3, timeout: std::time::Duration::from_secs(30) };
+    let net = NetOptions {
+        retries: 3,
+        timeout: std::time::Duration::from_secs(30),
+    };
     let reg = HttpRegistry::new(&server.url, &net).unwrap();
-    server.fail_next.store(1, std::sync::atomic::Ordering::SeqCst);
+    server
+        .fail_next
+        .store(1, std::sync::atomic::Ordering::SeqCst);
     // An edge 503 without X-Fpkg-Api is retried, not taken for a foreign server.
-    server.fail_bare.store(1, std::sync::atomic::Ordering::SeqCst);
+    server
+        .fail_bare
+        .store(1, std::sync::atomic::Ordering::SeqCst);
     scenario(&Target {
         name: "http-reference",
         registry: Box::new(reg),
@@ -345,10 +535,14 @@ fn http_registry_requires_the_api_header() {
             let mut s = s;
             let mut buf = [0u8; 4096];
             let _ = std::io::Read::read(&mut s, &mut buf);
-            let _ = std::io::Write::write_all(&mut s, b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+            let _ = std::io::Write::write_all(
+                &mut s,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            );
         }
     });
-    let reg = HttpRegistry::new(&format!("http://127.0.0.1:{port}/"), &NetOptions::default()).unwrap();
+    let reg =
+        HttpRegistry::new(&format!("http://127.0.0.1:{port}/"), &NetOptions::default()).unwrap();
     let e = reg.package(&pid("sfs")).unwrap_err();
     assert!(matches!(e, RegistryError::BadApi { .. }), "{e:?}");
 }

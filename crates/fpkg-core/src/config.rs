@@ -93,7 +93,9 @@ fn home() -> PathBuf {
 }
 
 fn env_dir(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `~/.config/fpkg` (or `$XDG_CONFIG_HOME/fpkg`, or `$FPKG_CONFIG_DIR`), macOS included.
@@ -114,12 +116,17 @@ fn parse_bool(name: &str, v: &str) -> Result<bool, ConfigError> {
     match v.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" | "" => Ok(false),
-        other => Err(ConfigError::Env { name: name.into(), message: format!("'{other}' is not a boolean") }),
+        other => Err(ConfigError::Env {
+            name: name.into(),
+            message: format!("'{other}' is not a boolean"),
+        }),
     }
 }
 
 fn env(names: &[&str]) -> Option<(String, String)> {
-    names.iter().find_map(|n| std::env::var(n).ok().map(|v| (n.to_string(), v)))
+    names
+        .iter()
+        .find_map(|n| std::env::var(n).ok().map(|v| (n.to_string(), v)))
 }
 
 impl Config {
@@ -132,7 +139,9 @@ impl Config {
             c.apply_file(&root.join(".fpkg").join("config.toml"))?;
         }
         c.apply_env()?;
-        if let Some((_, v)) = env(&["FPKG_REGISTRY_DEFAULT", "FPKG_REGISTRY"]).filter(|(_, v)| !v.is_empty()) {
+        if let Some((_, v)) =
+            env(&["FPKG_REGISTRY_DEFAULT", "FPKG_REGISTRY"]).filter(|(_, v)| !v.is_empty())
+        {
             trusted.push(v);
         }
         if let Some(r) = &flags.registry {
@@ -151,10 +160,17 @@ impl Config {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(ConfigError::File { path: path.into(), message: e.to_string() }),
+            Err(e) => {
+                return Err(ConfigError::File {
+                    path: path.into(),
+                    message: e.to_string(),
+                });
+            }
         };
-        let f: FileConfig =
-            toml::from_str(&text).map_err(|e| ConfigError::File { path: path.into(), message: e.to_string() })?;
+        let f: FileConfig = toml::from_str(&text).map_err(|e| ConfigError::File {
+            path: path.into(),
+            message: e.to_string(),
+        })?;
         if let Some(r) = f.registry.and_then(|r| r.default) {
             self.registry = r;
         }
@@ -176,7 +192,9 @@ impl Config {
     }
 
     fn apply_env(&mut self) -> Result<(), ConfigError> {
-        if let Some((_, v)) = env(&["FPKG_REGISTRY_DEFAULT", "FPKG_REGISTRY"]).filter(|(_, v)| !v.is_empty()) {
+        if let Some((_, v)) =
+            env(&["FPKG_REGISTRY_DEFAULT", "FPKG_REGISTRY"]).filter(|(_, v)| !v.is_empty())
+        {
             self.registry = v;
         }
         if let Some((n, v)) = env(&["FPKG_NET_OFFLINE", "FPKG_OFFLINE"]) {
@@ -189,7 +207,10 @@ impl Config {
                     .trim()
                     .parse::<i64>()
                     .map(Some)
-                    .map_err(|_| ConfigError::Env { name: n, message: format!("'{v}' is not a number") }),
+                    .map_err(|_| ConfigError::Env {
+                        name: n,
+                        message: format!("'{v}' is not a number"),
+                    }),
             }
         };
         if let Some(v) = num(&["FPKG_NET_RETRIES"])? {
@@ -206,10 +227,15 @@ impl Config {
 
     fn validate(&self) -> Result<(), ConfigError> {
         if !(0..=9).contains(&self.compression) {
-            return Err(ConfigError::Invalid(format!("[pack] compression is {}; deflate levels are 0 to 9", self.compression)));
+            return Err(ConfigError::Invalid(format!(
+                "[pack] compression is {}; deflate levels are 0 to 9",
+                self.compression
+            )));
         }
         if self.timeout_seconds == 0 {
-            return Err(ConfigError::Invalid("[net] timeout_seconds must be at least 1".into()));
+            return Err(ConfigError::Invalid(
+                "[net] timeout_seconds must be at least 1".into(),
+            ));
         }
         Ok(())
     }
@@ -222,7 +248,10 @@ impl Config {
     }
 
     pub fn net(&self) -> NetOptions {
-        NetOptions { retries: self.retries, timeout: Duration::from_secs(self.timeout_seconds) }
+        NetOptions {
+            retries: self.retries,
+            timeout: Duration::from_secs(self.timeout_seconds),
+        }
     }
 
     pub fn credentials_path(&self) -> PathBuf {
@@ -244,18 +273,31 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let project = t.path().join("project");
         std::fs::create_dir_all(project.join(".fpkg")).unwrap();
-        std::fs::write(project.join(".fpkg/config.toml"), "[registry]\ndefault = \"https://collector.example/\"\n").unwrap();
+        std::fs::write(
+            project.join(".fpkg/config.toml"),
+            "[registry]\ndefault = \"https://collector.example/\"\n",
+        )
+        .unwrap();
         // Without the environment's own FPKG_REGISTRY, the user default is
         // https://fluxpkg.dev/ unless the user config says otherwise.
-        let mut c = Config { config_dir: t.path().join("none"), ..Config::default() };
+        let mut c = Config {
+            config_dir: t.path().join("none"),
+            ..Config::default()
+        };
         c.env_token_registries = vec![registry_key(DEFAULT_REGISTRY)];
         c.apply_file(&project.join(".fpkg/config.toml")).unwrap();
         assert_eq!(c.registry, "https://collector.example/");
-        assert!(!c.env_token_allowed(&c.registry), "a project-config registry does not get FPKG_TOKEN");
+        assert!(
+            !c.env_token_allowed(&c.registry),
+            "a project-config registry does not get FPKG_TOKEN"
+        );
         assert!(c.env_token_allowed("https://fluxpkg.dev"));
         assert!(c.env_token_allowed("https://fluxpkg.dev/api/v1/"));
         // Named by a flag, it does.
-        let flags = Flags { registry: Some("https://collector.example/".into()), offline: None };
+        let flags = Flags {
+            registry: Some("https://collector.example/".into()),
+            offline: None,
+        };
         let loaded = Config::load(Some(&project), &flags).unwrap();
         assert!(loaded.env_token_allowed("https://collector.example/"));
     }
@@ -268,10 +310,20 @@ mod tests {
         std::fs::write(user.join("config.toml"), "[registry]\ndefault = \"https://a.example/\"\n[net]\nretries = 5\n[pack]\ncompression = 9\n").unwrap();
         let project = t.path().join("project");
         std::fs::create_dir_all(project.join(".fpkg")).unwrap();
-        std::fs::write(project.join(".fpkg/config.toml"), "[registry]\ndefault = \"https://b.example/\"\n").unwrap();
-        let mut c = Config { config_dir: user.clone(), ..Config::default() };
+        std::fs::write(
+            project.join(".fpkg/config.toml"),
+            "[registry]\ndefault = \"https://b.example/\"\n",
+        )
+        .unwrap();
+        let mut c = Config {
+            config_dir: user.clone(),
+            ..Config::default()
+        };
         c.apply_file(&user.join("config.toml")).unwrap();
-        assert_eq!((c.registry.as_str(), c.retries, c.compression), ("https://a.example/", 5, 9));
+        assert_eq!(
+            (c.registry.as_str(), c.retries, c.compression),
+            ("https://a.example/", 5, 9)
+        );
         c.apply_file(&project.join(".fpkg/config.toml")).unwrap();
         assert_eq!(c.registry, "https://b.example/");
         assert_eq!(c.retries, 5);

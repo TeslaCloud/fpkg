@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Conditional, Identity, PackageDoc, Published, Registry, RegistryError, Result, SearchPage, Token, VersionMeta};
+use super::{
+    Conditional, Identity, PackageDoc, Published, Registry, RegistryError, Result, SearchPage,
+    Token, VersionMeta,
+};
 use crate::PackageId;
 use crate::lockfile::write_atomic;
 use crate::version::Version;
@@ -25,13 +28,26 @@ struct Entry {
 /// path, in a safe encoding, so that two registries never share a directory
 /// (`https_fluxpkg.dev_443`, `http_127.0.0.1_8787_mirror_<hash>`).
 pub fn cache_key(registry_url: &str) -> String {
-    let safe = |s: &str| -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect() };
+    let safe = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
     let hash = |s: &str| crate::sha256_hex(s.as_bytes())[..12].to_string();
     match url::Url::parse(registry_url) {
         Ok(u) if u.scheme() == "file" => format!("file_{}", hash(u.path())),
         Ok(u) => {
             let host = u.host_str().unwrap_or("unknown");
-            let port = u.port_or_known_default().map(|p| p.to_string()).unwrap_or_default();
+            let port = u
+                .port_or_known_default()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
             let mut key = format!("{}_{}_{port}", safe(u.scheme()), safe(host));
             let path = u.path().trim_matches('/');
             if !path.is_empty() {
@@ -114,7 +130,13 @@ impl<R: Registry> CachedRegistry<R> {
     }
 
     fn needs_network(&self, what: &str) -> Result<()> {
-        if self.offline { Err(RegistryError::Invalid(format!("--offline: {what} needs the network"))) } else { Ok(()) }
+        if self.offline {
+            Err(RegistryError::Invalid(format!(
+                "--offline: {what} needs the network"
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     fn fetch_doc(&self, id: &PackageId) -> Result<Option<PackageDoc>> {
@@ -143,7 +165,14 @@ impl<R: Registry> CachedRegistry<R> {
                 None => self.inner.package(id),
             },
             Conditional::Modified { doc, etag } => {
-                self.write_entry(id.as_str(), &Entry { etag, fetched_at: now(), doc: doc.clone() })?;
+                self.write_entry(
+                    id.as_str(),
+                    &Entry {
+                        etag,
+                        fetched_at: now(),
+                        doc: doc.clone(),
+                    },
+                )?;
                 Ok(Some(doc))
             }
             Conditional::NotFound => {
@@ -169,7 +198,11 @@ impl<R: Registry> CachedRegistry<R> {
         let bytes = self.inner.archive(id, v)?;
         let actual = crate::sha256_hex(&bytes);
         if !actual.eq_ignore_ascii_case(sha256) {
-            return Err(RegistryError::Checksum { what: format!("{id} {v}"), expected: sha256.to_string(), actual });
+            return Err(RegistryError::Checksum {
+                what: format!("{id} {v}"),
+                expected: sha256.to_string(),
+                actual,
+            });
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| RegistryError::io(parent, e))?;
@@ -260,7 +293,10 @@ mod tests {
     fn keys() {
         assert_eq!(cache_key("https://fluxpkg.dev/"), "https_fluxpkg.dev_443");
         assert_eq!(cache_key("http://127.0.0.1:8787/"), "http_127.0.0.1_8787");
-        assert_ne!(cache_key("http://fluxpkg.dev/"), cache_key("https://fluxpkg.dev/"));
+        assert_ne!(
+            cache_key("http://fluxpkg.dev/"),
+            cache_key("https://fluxpkg.dev/")
+        );
         assert_ne!(cache_key("https://h/a/b/"), cache_key("https://h/a_b/"));
         assert!(cache_key("https://h/mirror/").starts_with("https_h_443_mirror_"));
         assert!(cache_key("file:///tmp/reg/").starts_with("file_"));

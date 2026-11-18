@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    ApiError, Conditional, DepMeta, Dist, Identity, PER_PAGE, PackageDoc, Published, Registry, RegistryError, Result,
-    SearchHit, SearchPage, Token, VersionMeta, literals,
+    ApiError, Conditional, DepMeta, Dist, Identity, PER_PAGE, PackageDoc, Published, Registry,
+    RegistryError, Result, SearchHit, SearchPage, Token, VersionMeta, literals,
 };
 use crate::PackageId;
 use crate::lockfile::write_atomic;
@@ -23,14 +23,25 @@ impl FileRegistry {
     pub fn new(root: impl Into<PathBuf>) -> FileRegistry {
         let root: PathBuf = root.into();
         let abs = std::path::absolute(&root).unwrap_or_else(|_| root.clone());
-        let url = url::Url::from_directory_path(&abs).map(|u| u.to_string()).unwrap_or_else(|_| format!("file://{}/", abs.display()));
-        let login = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "local".into());
-        FileRegistry { root: abs, url, login }
+        let url = url::Url::from_directory_path(&abs)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| format!("file://{}/", abs.display()));
+        let login = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "local".into());
+        FileRegistry {
+            root: abs,
+            url,
+            login,
+        }
     }
 
     pub fn from_url(url: &str) -> Result<FileRegistry> {
-        let u = url::Url::parse(url).map_err(|e| RegistryError::Invalid(format!("invalid registry URL '{url}': {e}")))?;
-        let path = u.to_file_path().map_err(|_| RegistryError::Invalid(format!("'{url}' is not a local file URL")))?;
+        let u = url::Url::parse(url)
+            .map_err(|e| RegistryError::Invalid(format!("invalid registry URL '{url}': {e}")))?;
+        let path = u
+            .to_file_path()
+            .map_err(|_| RegistryError::Invalid(format!("'{url}' is not a local file URL")))?;
         Ok(FileRegistry::new(path))
     }
 
@@ -52,10 +63,19 @@ impl FileRegistry {
         self.root.join("packages").join(format!("{id}.json"))
     }
     fn version_path(&self, id: &str, v: &str) -> PathBuf {
-        self.root.join("packages").join(id).join("versions").join(format!("{v}.json"))
+        self.root
+            .join("packages")
+            .join(id)
+            .join("versions")
+            .join(format!("{v}.json"))
     }
     pub fn archive_path(&self, id: &str, v: &str) -> PathBuf {
-        self.root.join("packages").join(id).join("versions").join(v).join("archive.zip")
+        self.root
+            .join("packages")
+            .join(id)
+            .join("versions")
+            .join(v)
+            .join("archive.zip")
     }
 
     fn read_json<T: serde::de::DeserializeOwned>(&self, path: &Path) -> Result<Option<T>> {
@@ -72,7 +92,8 @@ impl FileRegistry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| RegistryError::io(parent, e))?;
         }
-        let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| RegistryError::Invalid(e.to_string()))?;
+        let mut bytes =
+            serde_json::to_vec_pretty(value).map_err(|e| RegistryError::Invalid(e.to_string()))?;
         bytes.push(b'\n');
         write_atomic(path, &bytes).map_err(|e| RegistryError::io(path, e))
     }
@@ -95,12 +116,20 @@ impl FileRegistry {
         // their grammars, and the version is written canonically.
         let id = meta.package_id()?;
         let version = meta.parsed_version()?.to_string();
-        let meta = &VersionMeta { id: id.to_string(), version, ..meta.clone() };
+        let meta = &VersionMeta {
+            id: id.to_string(),
+            version,
+            ..meta.clone()
+        };
         let sha = crate::sha256_hex(archive);
         if let Some(d) = &meta.dist
             && !d.sha256.eq_ignore_ascii_case(&sha)
         {
-            return Err(RegistryError::Checksum { what: format!("{} {}", meta.id, meta.version), expected: d.sha256.clone(), actual: sha });
+            return Err(RegistryError::Checksum {
+                what: format!("{} {}", meta.id, meta.version),
+                expected: d.sha256.clone(),
+                actual: sha,
+            });
         }
         let ap = self.archive_path(&meta.id, &meta.version);
         if let Some(parent) = ap.parent() {
@@ -108,17 +137,23 @@ impl FileRegistry {
         }
         write_atomic(&ap, archive).map_err(|e| RegistryError::io(&ap, e))?;
         let mut m = meta.clone();
-        m.dist = Some(Dist { sha256: sha, size: archive.len() as u64, url: self.archive_url(&m.id, &m.version) });
-        self.write_json(&self.version_path(&m.id, &m.version), &m)?;
-        let mut doc = self.read_json::<PackageDoc>(&self.doc_path(&m.id))?.unwrap_or_else(|| PackageDoc {
-            id: m.id.clone(),
-            revision: 0,
-            owners: owners.to_vec(),
-            latest: None,
-            versions: Default::default(),
-
-            status: None,
+        m.dist = Some(Dist {
+            sha256: sha,
+            size: archive.len() as u64,
+            url: self.archive_url(&m.id, &m.version),
         });
+        self.write_json(&self.version_path(&m.id, &m.version), &m)?;
+        let mut doc = self
+            .read_json::<PackageDoc>(&self.doc_path(&m.id))?
+            .unwrap_or_else(|| PackageDoc {
+                id: m.id.clone(),
+                revision: 0,
+                owners: owners.to_vec(),
+                latest: None,
+                versions: Default::default(),
+
+                status: None,
+            });
         doc.versions.insert(m.version.clone(), m);
         doc.revision += 1;
         self.write_doc(&mut doc)
@@ -137,7 +172,10 @@ impl FileRegistry {
         let version = match Version::parse_strict(&meta.version) {
             Ok(v) if v.to_string() == meta.version => Some(v),
             Ok(v) => {
-                details.push(format!("version: '{}' is not canonical ('{v}')", meta.version));
+                details.push(format!(
+                    "version: '{}' is not canonical ('{v}')",
+                    meta.version
+                ));
                 None
             }
             Err(e) => {
@@ -163,7 +201,8 @@ impl FileRegistry {
             match crate::archive::validate(archive, &meta.id) {
                 Err(e) => details.push(format!("archive: {e}")),
                 Ok(_) => {
-                    let spec = read_member(archive, &format!("{}/packagespec.lua", meta.id)).unwrap_or_default();
+                    let spec = read_member(archive, &format!("{}/packagespec.lua", meta.id))
+                        .unwrap_or_default();
                     let versions = literals::assigned_literals(&spec, "version");
                     if versions.is_empty() {
                         details.push("archive: packagespec.lua assigns no version literal".into());
@@ -187,9 +226,13 @@ impl FileRegistry {
         }
         if details.is_empty() && !meta.allow_missing_dependencies {
             for (id, c) in &deps_ok {
-                let ok = self.read_json::<PackageDoc>(&self.doc_path(id))?.is_some_and(|doc| {
-                    doc.sorted_versions().iter().any(|(v, m)| !m.yanked && c.matches(v))
-                });
+                let ok = self
+                    .read_json::<PackageDoc>(&self.doc_path(id))?
+                    .is_some_and(|doc| {
+                        doc.sorted_versions()
+                            .iter()
+                            .any(|(v, m)| !m.yanked && c.matches(v))
+                    });
                 if !ok {
                     details.push(format!("dependencies: no non-yanked version of '{id}' satisfies '{c}' on this registry"));
                 }
@@ -198,7 +241,12 @@ impl FileRegistry {
         match (details.is_empty(), version) {
             (true, Some(v)) => Ok(v),
             _ => Err(RegistryError::Api(
-                ApiError::new(422, "validation_failed", format!("{} {} was refused", meta.id, meta.version)).with_details(details),
+                ApiError::new(
+                    422,
+                    "validation_failed",
+                    format!("{} {} was refused", meta.id, meta.version),
+                )
+                .with_details(details),
             )),
         }
     }
@@ -218,8 +266,11 @@ fn read_member(archive: &[u8], name: &str) -> Option<String> {
 }
 
 fn now() -> String {
-    let t = time::OffsetDateTime::now_utc().replace_nanosecond(0).unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
+    let t = time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    t.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
 }
 
 impl Registry for FileRegistry {
@@ -244,17 +295,29 @@ impl Registry for FileRegistry {
 
     fn publish(&self, meta: &VersionMeta, archive: &[u8], _auth: &Token) -> Result<Published> {
         if archive.len() as u64 > crate::archive::MAX_COMPRESSED {
-            return Err(RegistryError::api(413, "too_large", "the archive is larger than 64 MiB"));
+            return Err(RegistryError::api(
+                413,
+                "too_large",
+                "the archive is larger than 64 MiB",
+            ));
         }
         if PackageId::is_valid(&meta.id) && self.version_path(&meta.id, &meta.version).exists() {
-            return Err(RegistryError::api(409, "conflict", format!("{} {} is already published", meta.id, meta.version)));
+            return Err(RegistryError::api(
+                409,
+                "conflict",
+                format!("{} {} is already published", meta.id, meta.version),
+            ));
         }
         let version = self.validate_publish(meta, archive)?;
         let existing = self.read_json::<PackageDoc>(&self.doc_path(&meta.id))?;
         if let Some(doc) = &existing
             && !doc.owners.iter().any(|o| o == &self.login)
         {
-            return Err(RegistryError::api(403, "forbidden", format!("{} is not an owner of {}", self.login, meta.id)));
+            return Err(RegistryError::api(
+                403,
+                "forbidden",
+                format!("{} is not an owner of {}", self.login, meta.id),
+            ));
         }
         let sha256 = crate::sha256_hex(archive);
         let ap = self.archive_path(&meta.id, &meta.version);
@@ -265,7 +328,11 @@ impl Registry for FileRegistry {
         let mut m = meta.for_publish();
         m.allow_missing_dependencies = false;
         m.version = version.to_string();
-        m.dist = Some(Dist { sha256, size: archive.len() as u64, url: self.archive_url(&m.id, &m.version) });
+        m.dist = Some(Dist {
+            sha256,
+            size: archive.len() as u64,
+            url: self.archive_url(&m.id, &m.version),
+        });
         m.published_at = Some(now());
         m.published_by = Some(self.login.clone());
         self.write_json(&self.version_path(&m.id, &m.version), &m)?;
@@ -282,7 +349,10 @@ impl Registry for FileRegistry {
         doc.revision += 1;
         self.write_doc(&mut doc)?;
         // A file registry has no admins: nothing waits for approval.
-        Ok(Published { meta: m, pending: false })
+        Ok(Published {
+            meta: m,
+            pending: false,
+        })
     }
 
     fn yank(&self, id: &PackageId, v: &Version, yanked: bool, _auth: &Token) -> Result<()> {
@@ -310,10 +380,16 @@ impl Registry for FileRegistry {
             }
         } else {
             if !doc.owners.iter().any(|o| o == login) {
-                return Err(RegistryError::not_found(format!("{login} is not an owner of {id}")));
+                return Err(RegistryError::not_found(format!(
+                    "{login} is not an owner of {id}"
+                )));
             }
             if doc.owners.len() == 1 {
-                return Err(RegistryError::api(409, "last_owner", format!("{login} is the last owner of {id}")));
+                return Err(RegistryError::api(
+                    409,
+                    "last_owner",
+                    format!("{login} is the last owner of {id}"),
+                ));
             }
             doc.owners.retain(|o| o != login);
         }
@@ -331,10 +407,16 @@ impl Registry for FileRegistry {
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let Some(doc) = self.read_json::<PackageDoc>(&path)? else { continue };
+                let Some(doc) = self.read_json::<PackageDoc>(&path)? else {
+                    continue;
+                };
                 let Some(v) = doc.newest() else { continue };
                 let Some(m) = doc.get(&v) else { continue };
-                let fields = [doc.id.to_lowercase(), m.name.to_lowercase(), m.summary.clone().unwrap_or_default().to_lowercase()];
+                let fields = [
+                    doc.id.to_lowercase(),
+                    m.name.to_lowercase(),
+                    m.summary.clone().unwrap_or_default().to_lowercase(),
+                ];
                 // Rank: exact id, id prefix, any prefix, substring.
                 let rank = if q.is_empty() {
                     3
@@ -349,18 +431,40 @@ impl Registry for FileRegistry {
                 } else {
                     continue;
                 };
-                hits.push((rank, SearchHit { id: doc.id.clone(), name: m.name.clone(), version: Some(v.to_string()), latest: None, summary: m.summary.clone() }));
+                hits.push((
+                    rank,
+                    SearchHit {
+                        id: doc.id.clone(),
+                        name: m.name.clone(),
+                        version: Some(v.to_string()),
+                        latest: None,
+                        summary: m.summary.clone(),
+                    },
+                ));
             }
         }
         hits.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
         let total = hits.len() as u64;
         let page = page.max(1);
-        let packages = hits.into_iter().skip(((page - 1) * PER_PAGE) as usize).take(PER_PAGE as usize).map(|h| h.1).collect();
-        Ok(SearchPage { packages, page, per_page: PER_PAGE, total })
+        let packages = hits
+            .into_iter()
+            .skip(((page - 1) * PER_PAGE) as usize)
+            .take(PER_PAGE as usize)
+            .map(|h| h.1)
+            .collect();
+        Ok(SearchPage {
+            packages,
+            page,
+            per_page: PER_PAGE,
+            total,
+        })
     }
 
     fn me(&self, _auth: &Token) -> Result<Identity> {
-        Ok(Identity { login: self.login.clone(), token_name: None })
+        Ok(Identity {
+            login: self.login.clone(),
+            token_name: None,
+        })
     }
 
     fn package_conditional(&self, id: &PackageId, etag: Option<&str>) -> Result<Conditional> {
@@ -371,7 +475,10 @@ impl Registry for FileRegistry {
                 if etag == Some(tag.as_str()) {
                     Conditional::NotModified
                 } else {
-                    Conditional::Modified { doc, etag: Some(tag) }
+                    Conditional::Modified {
+                        doc,
+                        etag: Some(tag),
+                    }
                 }
             }
         })
