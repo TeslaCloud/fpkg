@@ -1,0 +1,10 @@
+--- Client-side hooks of the plugin. Hooks are handled by gamemode-like functions on the
+-- plugin's global instead of hook.Add.
+
+--- Greets the local player once their client has finished loading, unless the
+-- `{{id}}_greeting` config is off.
+function {{global}}:PlayerInitialized()
+  if !Config.get('{{id}}_greeting') then return end
+
+  PLAYER:notify('notification.{{id}}.greeting')
+end

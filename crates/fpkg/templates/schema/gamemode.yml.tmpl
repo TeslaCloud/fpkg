@@ -1,0 +1,30 @@
+# The plugins of Flux that the schema loads, and the config values it sets.
+
+# A named set of plugins from `config/profiles.yml` of Flux: `base`, `sandbox`, `roleplay` or
+# `roleplay_full`. Without it the schema loads the plugins of `depends` alone.
+profile: roleplay
+
+# Plugins to load on top of the profile, by the name of their folder, or of their file without
+# the realm prefix and `.lua`, in the `plugins` folder of Flux: those of a larger profile, or
+# the ones that are in no profile (cinematics, combat, d20, gamemastery, levels, limbs, radios,
+# srcdsproxy). The plugins in the `plugins` folder of the schema load without being listed.
+# depends:
+#   - items
+#   - doors
+#   - levels
+
+# Plugins of the profile to leave out. One that another loaded plugin depends on loads anyway.
+# exclude:
+#   - auto_walk
+#   - third_person
+
+# Plugins to load only when the server runs in the development environment.
+depends_development:
+  - dev_hud
+  - profiler
+
+# Every other key is a config value, named as in the `config/config.yml` of a plugin or
+# package, which the schema sets in place of its default. A value changed in game wins.
+characters_limit: 3
+chatbox_max_message_length: 256
+# raise_gun_sprint_lowers_weapon: true

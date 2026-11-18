@@ -1,0 +1,26 @@
+# {{title}}
+
+A Garry's Mod addon. It runs on any gamemode: the game runs `lua/autorun/{{id}}.lua` on the
+server and on the clients, which includes the files in `lua/{{id}}/` by the realm their
+`sh_`, `sv_` or `cl_` prefix names.
+
+## Installation
+
+Copy this folder into `garrysmod/addons/` of the server, or link it there while you work on it:
+
+```sh
+ln -s <path to this checkout> <server>/garrysmod/addons/{{id}}
+```
+
+## Packaging
+
+The folder is also an fpkg package (`packagespec.lua`), so fpkg validates it and builds an
+archive of it:
+
+```sh
+fpkg check
+fpkg pack --list
+```
+
+fpkg does not bundle dependencies into addons yet. `addon.json` keeps `packagespec.lua`, this
+file and the git files out of a Workshop upload.

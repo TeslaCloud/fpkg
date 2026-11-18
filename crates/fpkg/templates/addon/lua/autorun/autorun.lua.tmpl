@@ -1,0 +1,14 @@
+--- Entry point of the {{title}} addon, which the game runs on the server and on the clients
+-- from the autorun folder. Sends the shared and client files to the clients and includes every
+-- file of the addon in its realm, the shared one first.
+
+include('{{id}}/sh_{{id}}.lua')
+
+if SERVER then
+  AddCSLuaFile('{{id}}/sh_{{id}}.lua')
+  AddCSLuaFile('{{id}}/cl_{{id}}.lua')
+
+  include('{{id}}/sv_{{id}}.lua')
+else
+  include('{{id}}/cl_{{id}}.lua')
+end

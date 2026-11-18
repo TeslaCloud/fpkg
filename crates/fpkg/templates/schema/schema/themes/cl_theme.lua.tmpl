@@ -1,0 +1,35 @@
+--- The theme of the schema, the one it is played with by default. It builds on the factory
+-- theme of Flux and changes the accent colors, the layout of the main menu sidebar, the menu
+-- music and the bars, and answers the GetWelcomeTextColor theme hook of the schema.
+
+THEME.author  = {{author_lua}}
+THEME.id      = '{{id}}'
+THEME.parent  = 'factory'
+
+--- Sets the accent colors, main menu sidebar layout, menu music, bar height and bar text font.
+function THEME:on_loaded()
+  local scrw, scrh = ScrW(), ScrH()
+  local accent_color = Color(220, 100, 220)
+
+  self:set_color('accent', accent_color)
+  self:set_color('accent_dark', accent_color:darken(20))
+  self:set_color('accent_light', accent_color:lighten(20))
+
+  self:set_option('menu_sidebar_width', scrw * 0.25)
+  self:set_option('menu_sidebar_x', scrw * 0.5)
+  self:set_option('menu_sidebar_y', scrh * 0.25 * 3)
+  self:set_option('menu_sidebar_logo_space', 0)
+  self:set_option('menu_sidebar_height', scrh * 0.25)
+  self:set_option('menu_sidebar_button_centered', true)
+  self:set_option('menu_sidebar_button_offset_x', 0)
+  self:set_sound('menu_music', 'sound/music/hl2_song19.mp3')
+  self:set_option('bar_height', 7)
+
+  self:set_font('text_bar', self:get_font('main_font'), math.max(math.scale(14), 14), { weight = 600 })
+end
+
+--- Returns the theme accent color.
+-- @return [Color accent color]
+function THEME:GetWelcomeTextColor()
+  return self:get_color('accent')
+end

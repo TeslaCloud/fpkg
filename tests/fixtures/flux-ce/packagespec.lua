@@ -1,4 +1,5 @@
 Package:describe(function(s)
+  s.id          = 'flux'
   s.name        = 'Flux'
   s.version     = '0.9.0'
   s.date        = '2026-10-28'

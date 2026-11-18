@@ -9,8 +9,8 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipWriter};
 
 use super::{
-    ArchiveError, IGNORE_FILE, MARKER, MAX_COMPRESSED, MAX_MEMBERS, MAX_UNCOMPRESSED, STORE_BELOW, check_member_path,
-    excluded_dir, excluded_file,
+    ArchiveError, IGNORE_FILE, MARKER, MAX_COMPRESSED, MAX_MEMBERS, MAX_UNCOMPRESSED, STORE_BELOW,
+    check_member_path, excluded_dir, excluded_file,
 };
 use crate::spec::SPEC_FILE;
 
@@ -25,19 +25,41 @@ pub struct PackOptions {
     /// it. `None` packs with the package's own ignore files only, which is
     /// how `fpkg verify` re-packs an installed package.
     pub project_root: Option<PathBuf>,
+    /// Packing the root of a project as its package: `packages/`, `fpkg.lock`
+    /// and `.fpkg/` at the top are left out.
+    pub root_package: bool,
+    /// The binaries folder the spec names (`s.binaries`, relative): every
+    /// regular file directly in it is packed even when an ignore file drops it
+    /// (build output is usually git-ignored); the fixed exclusions still apply.
+    /// Without one, that holds for the binary modules (`*.dll`) directly in
+    /// `bin` alone: whatever else an ignored `bin/` has stays out.
+    pub binaries: Option<String>,
 }
 
 impl Default for PackOptions {
     fn default() -> Self {
-        PackOptions { mtime: None, level: 6, project_root: None }
+        PackOptions {
+            mtime: None,
+            level: 6,
+            project_root: None,
+            root_package: false,
+            binaries: None,
+        }
     }
 }
 
 impl PackOptions {
     /// Defaults with `SOURCE_DATE_EPOCH` from the environment.
     pub fn from_env(level: i64, project_root: Option<PathBuf>) -> Self {
-        let mtime = std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|s| s.trim().parse::<i64>().ok());
-        PackOptions { mtime, level, project_root }
+        let mtime = std::env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .and_then(|s| s.trim().parse::<i64>().ok());
+        PackOptions {
+            mtime,
+            level,
+            project_root,
+            ..Default::default()
+        }
     }
 }
 
@@ -70,15 +92,36 @@ fn build(root: &Path, file: &Path) -> Result<Option<Gitignore>, ArchiveError> {
     }
     let mut b = GitignoreBuilder::new(root);
     if let Some(e) = b.add(file) {
-        return Err(ArchiveError::Ignore { path: file.to_path_buf(), message: e.to_string() });
+        return Err(ArchiveError::Ignore {
+            path: file.to_path_buf(),
+            message: e.to_string(),
+        });
     }
-    b.build().map(Some).map_err(|e| ArchiveError::Ignore { path: file.to_path_buf(), message: e.to_string() })
+    b.build().map(Some).map_err(|e| ArchiveError::Ignore {
+        path: file.to_path_buf(),
+        message: e.to_string(),
+    })
 }
+
+/// The top-level names a root package leaves out.
+const ROOT_ONLY_DIRS: &[&str] = &["packages", ".fpkg"];
+const ROOT_ONLY_FILES: &[&str] = &["fpkg.lock"];
 
 /// The files under `dir` that go into the archive, in archive order. Excludes the
 /// fixed exclusions, the root `.fpkg.toml`, and whatever the package's
-/// `.gitignore`/`.fpkgignore` files or the project's `.fpkgignore` ignore.
-pub fn select(dir: &Path, project_root: Option<&Path>) -> Result<Vec<Selected>, ArchiveError> {
+/// `.gitignore`/`.fpkgignore` files or the project's `.fpkgignore` ignore, except
+/// for the regular files directly in the binaries folder. A `dir` that is itself
+/// a symlink (a linked package) is walked through.
+pub fn select(dir: &Path, opts: &PackOptions) -> Result<Vec<Selected>, ArchiveError> {
+    let real;
+    let dir = if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        real = dir.canonicalize().map_err(|e| ArchiveError::io(dir, e))?;
+        real.as_path()
+    } else {
+        dir
+    };
+    let project_root = opts.project_root.as_deref();
+    let root_package = opts.root_package;
     let project_ignore = match project_root {
         Some(root) if dir.starts_with(root) => build(root, &root.join(IGNORE_FILE))?,
         _ => None,
@@ -101,10 +144,23 @@ pub fn select(dir: &Path, project_root: Option<&Path>) -> Result<Vec<Selected>, 
         }
         let name = e.file_name().to_string_lossy();
         let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+        if root_package && e.depth() == 1 {
+            let skip = if is_dir {
+                ROOT_ONLY_DIRS.contains(&name.as_ref())
+            } else {
+                ROOT_ONLY_FILES.contains(&name.as_ref())
+            };
+            if skip {
+                return false;
+            }
+        }
         let fixed = if is_dir {
             excluded_dir(&name)
         } else {
-            excluded_file(&name) || e.path().strip_prefix(&root).is_ok_and(|r| r == Path::new(MARKER))
+            excluded_file(&name)
+                || e.path()
+                    .strip_prefix(&root)
+                    .is_ok_and(|r| r == Path::new(MARKER))
         };
         if fixed {
             return false;
@@ -116,7 +172,10 @@ pub fn select(dir: &Path, project_root: Option<&Path>) -> Result<Vec<Selected>, 
     });
     let mut out = Vec::new();
     for entry in wb.build() {
-        let entry = entry.map_err(|e| ArchiveError::Ignore { path: dir.to_path_buf(), message: e.to_string() })?;
+        let entry = entry.map_err(|e| ArchiveError::Ignore {
+            path: dir.to_path_buf(),
+            message: e.to_string(),
+        })?;
         if entry.depth() == 0 {
             continue;
         }
@@ -142,24 +201,114 @@ pub fn select(dir: &Path, project_root: Option<&Path>) -> Result<Vec<Selected>, 
         };
         let rel = rel.replace(std::path::MAIN_SEPARATOR, "/");
         check_member_path(&rel)?;
-        out.push(Selected { rel, abs: path.to_path_buf() });
+        out.push(Selected {
+            rel,
+            abs: path.to_path_buf(),
+        });
+    }
+    match &opts.binaries {
+        Some(folder) => add_binaries(dir, folder, false, root_package, &mut out)?,
+        None => add_binaries(
+            dir,
+            crate::spec::DEFAULT_BINARIES,
+            true,
+            root_package,
+            &mut out,
+        )?,
     }
     sort_members(&mut out, |s| &s.rel);
     Ok(out)
+}
+
+/// Adds the regular files directly in the binaries folder that ignore files
+/// dropped, unless a fixed exclusion covers them. With `modules_only` (the
+/// folder is the default, not one the spec names), only the binary modules.
+fn add_binaries(
+    dir: &Path,
+    folder: &str,
+    modules_only: bool,
+    root_package: bool,
+    out: &mut Vec<Selected>,
+) -> Result<(), ArchiveError> {
+    let mut parts = Vec::new();
+    for c in Path::new(folder).components() {
+        match c {
+            std::path::Component::Normal(s) => parts.push(s.to_string_lossy().into_owned()),
+            std::path::Component::CurDir => {}
+            _ => return Ok(()),
+        }
+    }
+    if parts.is_empty() || parts.iter().any(|p| excluded_dir(p)) {
+        return Ok(());
+    }
+    if root_package && (ROOT_ONLY_DIRS.contains(&parts[0].as_str())) {
+        return Ok(());
+    }
+    let base = parts.iter().fold(dir.to_path_buf(), |p, c| p.join(c));
+    if std::fs::symlink_metadata(&base).is_ok_and(|m| m.file_type().is_symlink()) {
+        return if modules_only {
+            Ok(())
+        } else {
+            Err(ArchiveError::Symlink(base))
+        };
+    }
+    let Ok(rd) = std::fs::read_dir(&base) else {
+        return Ok(());
+    };
+    let prefix = parts.join("/");
+    for entry in rd {
+        let entry = entry.map_err(|e| ArchiveError::io(&base, e))?;
+        let path = entry.path();
+        let ft = entry.file_type().map_err(|e| ArchiveError::io(&path, e))?;
+        if ft.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            if modules_only {
+                continue;
+            }
+            return Err(ArchiveError::BadPath {
+                path: path.to_string_lossy().into_owned(),
+                reason: "it is not UTF-8".into(),
+            });
+        };
+        if excluded_file(&name)
+            || (modules_only && !(ft.is_file() && crate::spec::is_module_name(&name)))
+        {
+            continue;
+        }
+        let rel = format!("{prefix}/{name}");
+        if out.iter().any(|s| s.rel == rel) {
+            continue;
+        }
+        if ft.is_symlink() {
+            return Err(ArchiveError::Symlink(path));
+        }
+        if !ft.is_file() {
+            return Err(ArchiveError::NotRegular(path));
+        }
+        check_member_path(&rel)?;
+        out.push(Selected { rel, abs: path });
+    }
+    Ok(())
 }
 
 /// `packagespec.lua` first, then bytewise.
 pub(crate) fn sort_members<T>(v: &mut [T], key: impl Fn(&T) -> &str) {
     v.sort_by(|a, b| {
         let (a, b) = (key(a), key(b));
-        (a != SPEC_FILE).cmp(&(b != SPEC_FILE)).then_with(|| a.as_bytes().cmp(b.as_bytes()))
+        (a != SPEC_FILE)
+            .cmp(&(b != SPEC_FILE))
+            .then_with(|| a.as_bytes().cmp(b.as_bytes()))
     });
 }
 
 fn zip_time(mtime: Option<i64>) -> DateTime {
     let fallback = DateTime::default();
     let Some(secs) = mtime else { return fallback };
-    let Ok(t) = time::OffsetDateTime::from_unix_timestamp(secs) else { return fallback };
+    let Ok(t) = time::OffsetDateTime::from_unix_timestamp(secs) else {
+        return fallback;
+    };
     // Zip times cover 1980 to 2107; clamp rather than fail.
     if t.year() < 1980 {
         return fallback;
@@ -167,13 +316,20 @@ fn zip_time(mtime: Option<i64>) -> DateTime {
     if t.year() > 2107 {
         return DateTime::from_date_and_time(2107, 12, 31, 23, 59, 58).unwrap_or(fallback);
     }
-    DateTime::from_date_and_time(t.year() as u16, u8::from(t.month()), t.day(), t.hour(), t.minute(), t.second())
-        .unwrap_or(fallback)
+    DateTime::from_date_and_time(
+        t.year() as u16,
+        u8::from(t.month()),
+        t.day(),
+        t.hour(),
+        t.minute(),
+        t.second(),
+    )
+    .unwrap_or(fallback)
 }
 
 /// Packs the package directory `dir` as `<id>/...`.
 pub fn pack(dir: &Path, id: &str, opts: &PackOptions) -> Result<Packed, ArchiveError> {
-    let files = select(dir, opts.project_root.as_deref())?;
+    let files = select(dir, opts)?;
     if !files.iter().any(|f| f.rel == SPEC_FILE) {
         return Err(ArchiveError::MissingSpec(format!("{id}/{SPEC_FILE}")));
     }
@@ -189,39 +345,62 @@ pub fn pack(dir: &Path, id: &str, opts: &PackOptions) -> Result<Packed, ArchiveE
         let size = data.len() as u64;
         total += size;
         if total > MAX_UNCOMPRESSED {
-            return Err(ArchiveError::TooLarge { what: "the package uncompressed".into(), size: total, limit: MAX_UNCOMPRESSED });
+            return Err(ArchiveError::TooLarge {
+                what: "the package uncompressed".into(),
+                size: total,
+                limit: MAX_UNCOMPRESSED,
+            });
         }
         let path = format!("{id}/{}", f.rel);
         check_member_path(&path)?;
         let options = if size < STORE_BELOW {
             SimpleFileOptions::default().compression_method(CompressionMethod::Stored)
         } else {
-            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated).compression_level(Some(opts.level))
+            SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .compression_level(Some(opts.level))
         }
         .last_modified_time(time)
         .unix_permissions(0o644);
         zw.start_file(path.as_str(), options)?;
-        zw.write_all(&data).map_err(|e| ArchiveError::io(&f.abs, e))?;
+        zw.write_all(&data)
+            .map_err(|e| ArchiveError::io(&f.abs, e))?;
         members.push(Member { path, size });
     }
     let bytes = zw.finish()?.into_inner();
     if bytes.len() as u64 > MAX_COMPRESSED {
-        return Err(ArchiveError::TooLarge { what: "the archive".into(), size: bytes.len() as u64, limit: MAX_COMPRESSED });
+        return Err(ArchiveError::TooLarge {
+            what: "the archive".into(),
+            size: bytes.len() as u64,
+            limit: MAX_COMPRESSED,
+        });
     }
     // The same checks as extraction, ratios included, on what was produced.
     super::validate(&bytes, id)?;
     let sha256 = crate::sha256_hex(&bytes);
-    Ok(Packed { bytes, sha256, members })
+    Ok(Packed {
+        bytes,
+        sha256,
+        members,
+    })
 }
 
 /// SHA-256 over sorted `<sha256>  <path>\n` lines for every file under `dir`
 /// except the root `.fpkg.toml`, ignoring nothing. Non-regular files are an error.
 pub fn tree_sha256(dir: &Path) -> Result<String, ArchiveError> {
+    let real = dir.canonicalize().map_err(|e| ArchiveError::io(dir, e))?;
+    let dir = real.as_path();
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     for entry in walkdir::WalkDir::new(dir).follow_links(false).min_depth(1) {
         let entry = entry.map_err(|e| {
-            let path = e.path().map(Path::to_path_buf).unwrap_or_else(|| dir.to_path_buf());
-            ArchiveError::Io { path, source: e.into() }
+            let path = e
+                .path()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| dir.to_path_buf());
+            ArchiveError::Io {
+                path,
+                source: e.into(),
+            }
         })?;
         let ft = entry.file_type();
         if ft.is_dir() {
@@ -237,7 +416,9 @@ pub fn tree_sha256(dir: &Path) -> Result<String, ArchiveError> {
         if !ft.is_file() {
             return Err(ArchiveError::NotRegular(entry.path().to_path_buf()));
         }
-        let rel = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        let rel = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
         files.push((rel, entry.path().to_path_buf()));
     }
     files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));

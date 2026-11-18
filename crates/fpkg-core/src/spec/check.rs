@@ -24,10 +24,16 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     fn error(message: impl Into<String>) -> Self {
-        Diagnostic { severity: Severity::Error, message: message.into() }
+        Diagnostic {
+            severity: Severity::Error,
+            message: message.into(),
+        }
     }
     fn warning(message: impl Into<String>) -> Self {
-        Diagnostic { severity: Severity::Warning, message: message.into() }
+        Diagnostic {
+            severity: Severity::Warning,
+            message: message.into(),
+        }
     }
 }
 
@@ -43,16 +49,73 @@ impl fmt::Display for Diagnostic {
 
 /// Known SPDX license ids; not the whole list (`'file'` with a LICENSE covers the rest).
 const SPDX: &[&str] = &[
-    "0BSD", "AFL-3.0", "AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later", "Apache-1.1", "Apache-2.0",
-    "Artistic-2.0", "BSD-1-Clause", "BSD-2-Clause", "BSD-3-Clause", "BSD-3-Clause-Clear", "BSD-4-Clause",
-    "BSL-1.0", "CC-BY-3.0", "CC-BY-4.0", "CC-BY-NC-4.0", "CC-BY-NC-SA-4.0", "CC-BY-ND-4.0", "CC-BY-SA-3.0",
-    "CC-BY-SA-4.0", "CC0-1.0", "CDDL-1.0", "ECL-2.0", "EPL-1.0", "EPL-2.0", "EUPL-1.1", "EUPL-1.2",
-    "GPL-1.0-only", "GPL-1.0-or-later", "GPL-2.0", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0",
-    "GPL-3.0-only", "GPL-3.0-or-later", "ISC", "LGPL-2.0-only", "LGPL-2.0-or-later", "LGPL-2.1",
-    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0", "LGPL-3.0-only", "LGPL-3.0-or-later", "LPPL-1.3c",
-    "MIT", "MIT-0", "MPL-1.1", "MPL-2.0", "MS-PL", "MS-RL", "MulanPSL-2.0", "NCSA", "ODbL-1.0", "OFL-1.1",
-    "OSL-3.0", "PostgreSQL", "Unicode-DFS-2016", "Unlicense", "UPL-1.0", "Vim", "W3C", "WTFPL", "X11",
-    "Zlib", "zlib-acknowledgement",
+    "0BSD",
+    "AFL-3.0",
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "Apache-1.1",
+    "Apache-2.0",
+    "Artistic-2.0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-3-Clause-Clear",
+    "BSD-4-Clause",
+    "BSL-1.0",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "CC-BY-NC-4.0",
+    "CC-BY-NC-SA-4.0",
+    "CC-BY-ND-4.0",
+    "CC-BY-SA-3.0",
+    "CC-BY-SA-4.0",
+    "CC0-1.0",
+    "CDDL-1.0",
+    "ECL-2.0",
+    "EPL-1.0",
+    "EPL-2.0",
+    "EUPL-1.1",
+    "EUPL-1.2",
+    "GPL-1.0-only",
+    "GPL-1.0-or-later",
+    "GPL-2.0",
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "ISC",
+    "LGPL-2.0-only",
+    "LGPL-2.0-or-later",
+    "LGPL-2.1",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "LPPL-1.3c",
+    "MIT",
+    "MIT-0",
+    "MPL-1.1",
+    "MPL-2.0",
+    "MS-PL",
+    "MS-RL",
+    "MulanPSL-2.0",
+    "NCSA",
+    "ODbL-1.0",
+    "OFL-1.1",
+    "OSL-3.0",
+    "PostgreSQL",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "UPL-1.0",
+    "Vim",
+    "W3C",
+    "WTFPL",
+    "X11",
+    "Zlib",
+    "zlib-acknowledgement",
 ];
 
 /// Whether `license` is a known SPDX id or an expression of them
@@ -91,8 +154,8 @@ fn has_license_file(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// A relative path that stays inside its base, normalised to forward slashes.
-fn normal_rel(path: &str) -> Option<String> {
+/// A relative path that stays inside its base, normalized to forward slashes.
+pub fn normal_rel(path: &str) -> Option<String> {
     let mut parts = Vec::new();
     for c in Path::new(path).components() {
         match c {
@@ -101,7 +164,11 @@ fn normal_rel(path: &str) -> Option<String> {
             _ => return None,
         }
     }
-    if parts.is_empty() { None } else { Some(parts.join("/")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
 }
 
 /// Validates a manifest against its directory. The result is sorted, errors
@@ -111,15 +178,60 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
     let dir = &loc.dir;
 
     if !loc.is_project_manifest {
-        let dir_name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let dir_name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if m.id != dir_name {
-            out.push(Diagnostic::error(format!("id '{}' does not match the directory name '{dir_name}'", m.id)));
+            out.push(Diagnostic::error(format!(
+                "id '{}' does not match the directory name '{dir_name}'",
+                m.id
+            )));
         }
         if let Some(reason) = PackageId::problem(&m.id) {
             out.push(Diagnostic::error(format!(
                 "'{}' is not a valid package id: {reason} (^[a-z][a-z0-9_]{{0,63}}$)",
                 m.id
             )));
+        }
+        if let Some(declared) = &m.declared_id
+            && declared != &m.id
+        {
+            out.push(Diagnostic::error(format!(
+                "s.id '{declared}' does not match the directory name '{}'",
+                m.id
+            )));
+        }
+    }
+    let gamemode = if loc.is_project_manifest {
+        crate::project::gamemode_name(dir)
+    } else {
+        None
+    };
+    if loc.is_project_manifest {
+        match (&gamemode, &m.declared_id) {
+            (Some(gm), Some(declared)) if declared != gm => out.push(Diagnostic::error(format!(
+                "s.id '{declared}' does not match the gamemode name '{gm}' of {gm}.txt, which is the project id"
+            ))),
+            (Some(_), _) => {}
+            (None, declared) => {
+                if dir.join("gamemode").is_dir() {
+                    out.push(Diagnostic::warning(
+                        "this directory has gamemode/ but no <name>.txt that starts with \"<name>\" (or more than one), so it is treated as a package, not as a gamemode project".to_string(),
+                    ));
+                }
+                if let Some(d) = declared
+                    && let Some(reason) = PackageId::problem(d)
+                {
+                    out.push(Diagnostic::error(format!("s.id '{d}' is not a valid package id: {reason} (^[a-z][a-z0-9_]{{0,63}}$)")));
+                } else if declared.as_deref() != crate::project::spec_id_of(dir).as_deref() {
+                    out.push(Diagnostic::error(format!(
+                        "s.id evaluates to {}, but fpkg reads the project id from the text before evaluating it and finds {}; write it as a plain s.id = '<id>' line",
+                        declared.as_deref().map(|d| format!("'{d}'")).unwrap_or_else(|| "nothing".into()),
+                        crate::project::spec_id_of(dir).map(|d| format!("'{d}'")).unwrap_or_else(|| "none".into()),
+                    )));
+                }
+            }
         }
     }
     for p in &m.problems {
@@ -135,20 +247,49 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
         )));
     }
 
+    if let Some(b) = &m.binaries {
+        match normal_rel(b) {
+            None => out.push(Diagnostic::error(format!("s.binaries '{b}' is not a folder path inside the package"))),
+            Some(rel) if dir.join(&rel).is_file() || rel.ends_with(".dll") => {
+                out.push(Diagnostic::error(format!("s.binaries '{b}' names a file; it must name the folder that holds the binary modules")))
+            }
+            Some(rel) if !dir.join(&rel).is_dir() => out.push(Diagnostic::warning(format!(
+                "s.binaries '{b}' does not exist; build the binaries first (fpkg pack and publish need them)"
+            ))),
+            Some(rel) if super::binary_modules(dir, &rel).is_empty() => out.push(Diagnostic::warning(format!(
+                "s.binaries '{b}' has no .dll files; build the binaries first (fpkg pack and publish need them)"
+            ))),
+            Some(_) => {}
+        }
+    }
+
     // Listed files exist, stay inside the package and are not excluded from
-    // the archive. The project manifest is never packed.
-    let packed: Option<HashSet<String>> = if loc.is_project_manifest {
+    // the archive. The manifest of a gamemode project is never packed; the
+    // root of any other project is a package too.
+    let packed: Option<HashSet<String>> = if loc.is_project_manifest && gamemode.is_some() {
         None
     } else {
-        match crate::archive::pack_selection(dir, Some(&loc.project_root)) {
+        let opts = crate::archive::PackOptions {
+            project_root: Some(loc.project_root.clone()),
+            root_package: loc.is_project_manifest,
+            binaries: m.binaries.clone(),
+            ..Default::default()
+        };
+        match crate::archive::pack_selection(dir, &opts) {
             Ok(sel) => Some(sel.into_iter().collect()),
             Err(e) => {
-                out.push(Diagnostic::error(format!("cannot select the package's files: {e}")));
+                out.push(Diagnostic::error(format!(
+                    "cannot select the package's files: {e}"
+                )));
                 None
             }
         }
     };
-    for (field, list) in [("file", &m.files), ("cl_file", &m.cl_files), ("sv_file", &m.sv_files)] {
+    for (field, list) in [
+        ("file", &m.files),
+        ("cl_file", &m.cl_files),
+        ("sv_file", &m.sv_files),
+    ] {
         for f in list.iter() {
             check_listed(&mut out, dir, &format!("s.{field}"), f, packed.as_ref());
         }
@@ -159,7 +300,10 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
         match d.kind {
             DepKind::Package => {
                 if let Some(reason) = PackageId::problem(&d.id) {
-                    out.push(Diagnostic::error(format!("dependency '{}' is not a valid package id: {reason}", d.id)));
+                    out.push(Diagnostic::error(format!(
+                        "dependency '{}' is not a valid package id: {reason}",
+                        d.id
+                    )));
                 }
                 if !loc.is_project_manifest && d.id == m.id {
                     out.push(Diagnostic::error(format!("'{}' depends on itself", m.id)));
@@ -173,11 +317,17 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
                         d.id
                     )));
                 } else if !dir.join(&d.id).join(SPEC_FILE).is_file() {
-                    out.push(Diagnostic::error(format!("path dependency '{}' has no {SPEC_FILE}", d.id)));
+                    out.push(Diagnostic::error(format!(
+                        "path dependency '{}' has no {SPEC_FILE}",
+                        d.id
+                    )));
                 } else if let Some(id) = d.package_id()
                     && let Some(reason) = PackageId::problem(id)
                 {
-                    out.push(Diagnostic::error(format!("path dependency '{}': '{id}' {reason}", d.id)));
+                    out.push(Diagnostic::error(format!(
+                        "path dependency '{}': '{id}' {reason}",
+                        d.id
+                    )));
                 }
             }
         }
@@ -185,7 +335,9 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
             && let Some(id) = d.package_id()
             && !seen.insert(id.to_string())
         {
-            out.push(Diagnostic::warning(format!("'{id}' is listed twice in s.depends")));
+            out.push(Diagnostic::warning(format!(
+                "'{id}' is listed twice in s.depends"
+            )));
         }
     }
 
@@ -193,17 +345,21 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
         None => out.push(Diagnostic::warning("s.license is missing")),
         Some("file") => {
             if !has_license_file(dir) {
-                out.push(Diagnostic::error("s.license is 'file' but there is no LICENSE* file in the package"));
+                out.push(Diagnostic::error(
+                    "s.license is 'file' but there is no LICENSE* file in the package",
+                ));
             }
         }
-        Some(l) if !is_known_license(l) => {
-            out.push(Diagnostic::error(format!("s.license '{l}' is not a known SPDX id (or 'file' with a LICENSE)")))
-        }
+        Some(l) if !is_known_license(l) => out.push(Diagnostic::error(format!(
+            "s.license '{l}' is not a known SPDX id (or 'file' with a LICENSE)"
+        ))),
         Some(_) => {}
     }
 
     if m.serverside && m.clientside {
-        out.push(Diagnostic::error("s.serverside and s.clientside are both true"));
+        out.push(Diagnostic::error(
+            "s.serverside and s.clientside are both true",
+        ));
     }
 
     for f in &m.unknown_fields {
@@ -211,16 +367,26 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
             "dependency" | "dep" | "depend" => "; declare dependencies with s.depends 'id'",
             _ => "",
         };
-        out.push(Diagnostic::warning(format!("unknown field s.{f}, which Flux ignores{hint}")));
+        out.push(Diagnostic::warning(format!(
+            "unknown field s.{f}, which Flux ignores{hint}"
+        )));
     }
 
     out.sort_by_key(|d| std::cmp::Reverse(d.severity));
     out
 }
 
-fn check_listed(out: &mut Vec<Diagnostic>, dir: &Path, what: &str, path: &str, packed: Option<&HashSet<String>>) {
+fn check_listed(
+    out: &mut Vec<Diagnostic>,
+    dir: &Path,
+    what: &str,
+    path: &str,
+    packed: Option<&HashSet<String>>,
+) {
     let Some(rel) = normal_rel(path) else {
-        out.push(Diagnostic::error(format!("{what} '{path}' is not a relative path inside the package")));
+        out.push(Diagnostic::error(format!(
+            "{what} '{path}' is not a relative path inside the package"
+        )));
         return;
     };
     let full = dir.join(&rel);
@@ -231,12 +397,16 @@ fn check_listed(out: &mut Vec<Diagnostic>, dir: &Path, what: &str, path: &str, p
     if let (Ok(d), Ok(f)) = (dir.canonicalize(), full.canonicalize())
         && !f.starts_with(d)
     {
-        out.push(Diagnostic::error(format!("{what} '{path}' is outside the package")));
+        out.push(Diagnostic::error(format!(
+            "{what} '{path}' is outside the package"
+        )));
         return;
     }
     if let Some(p) = packed
         && !p.contains(&rel)
     {
-        out.push(Diagnostic::error(format!("{what} '{path}' is excluded from the archive")));
+        out.push(Diagnostic::error(format!(
+            "{what} '{path}' is excluded from the archive"
+        )));
     }
 }

@@ -1,0 +1,82 @@
+## Running it with Docker
+
+You need Docker with Compose. Install the packages of the schema into this checkout, then build
+and start the server:
+
+```sh
+fpkg install
+docker compose up
+```
+
+The first build downloads the dedicated server, which takes several GB. The server is hidden
+from the server browser: connect to it with `connect localhost` from the game console.
+`docker compose attach server` opens the server console, and Ctrl+P Ctrl+Q leaves it again.
+`docker compose down` stops the server (enter `quit` in its console first to shut it down
+cleanly), and `docker compose down -v` also deletes the database and the other data that the
+server keeps in its volumes.
+
+### Environment
+
+The server runs in the `production` environment unless `config/environment.local.lua` names
+another one, such as `development`, in which Flux runs hooks in safe mode and prints more
+information:
+
+```lua
+return 'development'
+```
+
+### Database
+
+The server uses SQLite, and keeps the database in the `sqlite` volume. For PostgreSQL, add the
+gmsv_pg package (this uncomments its line in `packagespec.lua`):
+
+```sh
+fpkg add gmsv_pg
+```
+
+Then write `config/database.local.yml`, whose first key is the name of the environment the
+server runs in:
+
+```yaml
+production:
+  adapter: "pg"
+  encoding: "utf8"
+  host: "postgres"
+  user: "flux"
+  password: "flux"
+  database: "flux"
+  port: 5432
+```
+
+and start the server together with a PostgreSQL server:
+
+```sh
+docker compose --profile postgres up
+```
+
+MariaDB works the same way without a package: `adapter: "mysqloo"`, `host: "mariadb"` and
+`port: 3306` in `config/database.local.yml`, then `docker compose --profile mariadb up`. The
+image has the binary modules of both drivers, and that of gmsv_file, from
+https://github.com/TeslaCloud/flux-dependencies.
+
+### Notes
+
+- The files of the checkout have to be writable by the user ID 1000, which the server runs as.
+- Packages linked with `fpkg link` point outside of the container. Bind mount the folder each one
+  links to at `/home/steam/flux_server/garrysmod/gamemodes/{{id}}/packages/<id>` in a
+  `docker-compose.override.yml` next to `docker-compose.yml`, which Git ignores:
+
+  ```yaml
+  services:
+    server:
+      volumes:
+        - <path to the checkout>:/home/steam/flux_server/garrysmod/gamemodes/{{id}}/packages/<id>
+  ```
+
+- `FLUX_MAP` sets the map (`gm_construct`) and `FLUX_PORT` the port on the host (27015), in the
+  environment or in an `.env` file next to `docker-compose.yml`.
+- `docker build -t {{id}} .` builds an image of the server with the schema, its packages and
+  its content in it, which runs without the checkout:
+  `docker run -it -p 27015:27015/udp -p 27015:27015/tcp {{id}}`. Local config files
+  (`*.local.yml`, `*.local.lua`) stay out of the image.
+

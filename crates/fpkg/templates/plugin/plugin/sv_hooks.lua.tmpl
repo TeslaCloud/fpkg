@@ -1,0 +1,8 @@
+--- Server-side hooks of the plugin. Hooks are handled by gamemode-like functions on the
+-- plugin's global instead of hook.Add.
+
+--- Writes to the server log that a player's client has finished loading.
+-- @param actor [Player the player who has finished loading]
+function {{global}}:PlayerInitialized(actor)
+  ServerLog(t('notification.{{id}}.player_ready', { name = actor:Name() })..'\n')
+end

@@ -1,0 +1,23 @@
+--- Main file of the {{title}} package, run on both realms. The package keeps a registry of
+-- values by ID in its global, `{{global}}`, which Flux creates from `s.global` before it runs
+-- this file: code registers a value with `{{global}}:register` and looks it up with
+-- `{{global}}:find`. The registry is kept across code refreshes, and registering an ID again
+-- replaces its value.
+-- @module [{{global}}]
+
+local stored = {{global}}.stored or {}
+{{global}}.stored = stored
+
+--- Registers a value under an ID, replacing the value registered under it before.
+-- @param id [String]
+-- @param value [Any]
+function {{global}}:register(id, value)
+  stored[id] = value
+end
+
+--- Returns the value registered under an ID.
+-- @param id [String]
+-- @return [Any the value, nil when nothing is registered under the ID]
+function {{global}}:find(id)
+  return stored[id]
+end

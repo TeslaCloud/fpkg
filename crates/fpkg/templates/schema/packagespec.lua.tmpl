@@ -1,0 +1,14 @@
+Package:describe(function(s)
+  s.name        = {{title_lua}}
+  s.version     = '0.1.0'
+  s.date        = '{{date}}'
+  s.summary     = ''
+  s.license     = 'MIT'
+
+  s.depends('flux', {{flux_lua}})
+
+  -- Uncomment the dependency of the database driver the server uses, then run `fpkg install`.
+  -- SQLite needs none. MySQL and MariaDB use mysqloo, which is not an fpkg package yet:
+  -- copy its module to garrysmod/lua/bin by hand.
+  -- s.depends 'gmsv_pg'
+end)

@@ -52,12 +52,18 @@ pub enum ArchiveError {
     #[error("ignore file {path}: {message}")]
     Ignore { path: PathBuf, message: String },
     #[error("{path}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl ArchiveError {
     pub(crate) fn io(path: &Path, source: std::io::Error) -> Self {
-        ArchiveError::Io { path: path.to_path_buf(), source }
+        ArchiveError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
     }
 }
 
@@ -71,7 +77,12 @@ impl From<zip::result::ZipError> for ArchiveError {
 /// slashes, no `.` or `..`, not absolute, no drive letters, components of at
 /// most 255 bytes. UTF-8 is checked by the caller.
 pub fn check_member_path(path: &str) -> Result<(), ArchiveError> {
-    let bad = |reason: &str| Err(ArchiveError::BadPath { path: path.to_string(), reason: reason.to_string() });
+    let bad = |reason: &str| {
+        Err(ArchiveError::BadPath {
+            path: path.to_string(),
+            reason: reason.to_string(),
+        })
+    };
     if path.is_empty() {
         return bad("it is empty");
     }
@@ -92,7 +103,9 @@ pub fn check_member_path(path: &str) -> Result<(), ArchiveError> {
         match comp {
             "" => return bad("it has an empty component"),
             "." | ".." => return bad("it has a '.' or '..' component"),
-            c if c.len() > MAX_COMPONENT_BYTES => return bad("a component is longer than 255 bytes"),
+            c if c.len() > MAX_COMPONENT_BYTES => {
+                return bad("a component is longer than 255 bytes");
+            }
             _ => {}
         }
     }
@@ -101,7 +114,10 @@ pub fn check_member_path(path: &str) -> Result<(), ArchiveError> {
 
 /// The fixed exclusions for a directory name.
 pub fn excluded_dir(name: &str) -> bool {
-    matches!(name, ".git" | ".svn" | ".vscode" | ".idea" | "node_modules" | "target")
+    matches!(
+        name,
+        ".git" | ".svn" | ".vscode" | ".idea" | "node_modules" | "target"
+    )
 }
 
 /// The fixed exclusions for a file name.
@@ -109,15 +125,27 @@ pub fn excluded_file(name: &str) -> bool {
     // A `.git` or `.svn` file (a submodule's gitlink) is litter too.
     matches!(name, ".DS_Store" | ".git" | ".svn")
         || name.starts_with("._")
-        || [".swp", ".local.yml", ".local.lua", ".generated.lua", ".db", ".old", ".cache", ".env"]
-            .iter()
-            .any(|ext| name.ends_with(ext))
+        || [
+            ".swp",
+            ".local.yml",
+            ".local.lua",
+            ".generated.lua",
+            ".db",
+            ".old",
+            ".cache",
+            ".env",
+        ]
+        .iter()
+        .any(|ext| name.ends_with(ext))
 }
 
 #[cfg(test)]
 mod tests;
 
 /// The package-relative paths `pack` would include, for `fpkg check`.
-pub fn pack_selection(dir: &Path, project_root: Option<&Path>) -> Result<Vec<String>, ArchiveError> {
-    Ok(pack::select(dir, project_root)?.into_iter().map(|s| s.rel).collect())
+pub fn pack_selection(dir: &Path, opts: &PackOptions) -> Result<Vec<String>, ArchiveError> {
+    Ok(pack::select(dir, opts)?
+        .into_iter()
+        .map(|s| s.rel)
+        .collect())
 }

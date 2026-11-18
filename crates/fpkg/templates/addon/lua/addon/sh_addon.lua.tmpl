@@ -1,0 +1,13 @@
+--- Shared part of the {{title}} addon, included first on both realms. Defines the global table
+-- of the addon, which is kept when the file runs again after a code refresh.
+
+{{global}} = {{global}} or {}
+{{global}}.title = {{title_lua}}
+
+local prefix_color = Color(100, 180, 255)
+
+--- Prints a line to the console of the realm it runs in, prefixed with the title of the addon.
+-- @param message [String]
+function {{global}}.log(message)
+  MsgC(prefix_color, '['..{{global}}.title..'] ', color_white, message, '\n')
+end

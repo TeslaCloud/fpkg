@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::PackageId;
 use crate::archive::ArchiveError;
 use crate::lockfile::{Current, LockError, LockedPackage, Lockfile, Source, Stale, staleness};
-use crate::project::{LocalPackage, Marker, Project, ProjectError};
+use crate::project::{LocalPackage, Marker, Project, ProjectError, Shadowed};
 use crate::registry::{Registries, RegistryError};
 use crate::resolve::{Release, ResolveError, ResolveInput, resolve};
 use crate::spec::{self, DepKind, Env, Manifest, SpecError, SpecLocation};
@@ -37,6 +37,17 @@ pub enum InstallError {
     NoLock,
     #[error("{}", conflict_message(.0))]
     Conflict(Vec<String>),
+    /// Files that `install` would materialize over files it did not write.
+    #[error("{}", crate::files::conflict_message(.0))]
+    FileConflict(Vec<String>),
+    #[error("{path} is provided by both {first} and {second}, with different content")]
+    FileClash {
+        path: String,
+        first: String,
+        second: String,
+    },
+    #[error("{package}: s.binaries '{folder}' is not a folder path inside the package")]
+    BadBinaries { package: String, folder: String },
     #[error("{}", .path.display())]
     Io {
         path: PathBuf,
@@ -46,16 +57,35 @@ pub enum InstallError {
 }
 
 fn fmt_stale(v: &[Stale]) -> String {
-    v.iter().map(|s| format!("  - {s}")).collect::<Vec<_>>().join("\n")
+    v.iter()
+        .map(|s| format!("  - {s}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn conflict_message(ids: &[String]) -> String {
-    let dirs = ids.iter().map(|id| format!("packages/{id}")).collect::<Vec<_>>().join(", ");
-    let (verb, pron, are) = if ids.len() == 1 { ("exists", "it", "is") } else { ("exist", "them", "are") };
+    let dirs = ids
+        .iter()
+        .map(|id| format!("packages/{id}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (verb, pron, are) = if ids.len() == 1 {
+        ("exists", "it", "is")
+    } else {
+        ("exist", "them", "are")
+    };
     format!(
         "{dirs} {verb} without an .fpkg.toml marker but {are} locked as registry {}; someone copied {pron} in by hand.\nRemove {pron}, run `fpkg lock` to use {pron} as workspace {}, or `fpkg install --force` to replace {pron}",
-        if ids.len() == 1 { "package" } else { "packages" },
-        if ids.len() == 1 { "package" } else { "packages" },
+        if ids.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        },
+        if ids.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        },
     )
 }
 
@@ -64,8 +94,12 @@ fn conflict_message(ids: &[String]) -> String {
 pub struct Loaded {
     pub project: Project,
     pub root: Manifest,
-    /// Unmarked package directories, by id.
+    /// Workspace packages (unmarked, linked or nested directories), by id.
     pub workspace: BTreeMap<String, Manifest>,
+    /// Their directories, by id.
+    pub dirs: BTreeMap<String, LocalPackage>,
+    /// Nested directories that another directory of the same id hides.
+    pub shadowed: Vec<Shadowed>,
     /// Marked (installed) package directories, by id.
     pub installed: BTreeMap<String, LocalPackage>,
     /// Path dependencies, by id: project-relative directory and manifest.
@@ -82,11 +116,23 @@ impl Loaded {
 
     pub fn staleness(&self, lock: &Lockfile) -> Vec<Stale> {
         let deps = self.root_deps();
-        staleness(lock, &Current { root_deps: &deps, workspace: &self.workspace, paths: &self.paths })
+        staleness(
+            lock,
+            &Current {
+                root_deps: &deps,
+                workspace: &self.workspace,
+                paths: &self.paths,
+            },
+        )
     }
 
     /// Resolves against the default registry and returns the lock.
-    pub fn resolve(&self, lock: Option<&Lockfile>, release: Release, registries: &Registries) -> Result<Lockfile, InstallError> {
+    pub fn resolve(
+        &self,
+        lock: Option<&Lockfile>,
+        release: Release,
+        registries: &Registries,
+    ) -> Result<Lockfile, InstallError> {
         let deps = self.root_deps();
         let reg = registries.default_registry()?;
         let url = registries.default_url().to_string();
@@ -104,20 +150,36 @@ impl Loaded {
 }
 
 /// Reads the project, evaluating specs in parallel. With `lock`, unmarked
-/// directories it has as registry packages are `conflicts`; otherwise they are
-/// workspace packages, which shadow the registry.
+/// top-level directories it has as registry packages are `conflicts`;
+/// otherwise they are workspace packages, which shadow the registry. A
+/// symlinked directory and the packages nested in a workspace directory are
+/// always workspace packages.
 pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Loaded, InstallError> {
     let mut installed = BTreeMap::new();
     let mut conflicts = Vec::new();
     let mut locs: Vec<SpecLocation> = vec![project.root_location()];
-    for p in project.packages()? {
+    let mut dirs = BTreeMap::new();
+    let scan = project.scan()?;
+    for p in &scan.top {
         if p.marker.is_some() {
-            installed.insert(p.id.clone(), p);
-        } else if lock.and_then(|l| l.get(&p.id)).is_some_and(|l| matches!(l.source, Source::Registry(_))) {
+            installed.insert(p.id.clone(), p.clone());
+        } else if p.link.is_none()
+            && lock
+                .and_then(|l| l.get(&p.id))
+                .is_some_and(|l| matches!(l.source, Source::Registry(_)))
+        {
             conflicts.push(p.id.clone());
         } else {
-            locs.push(project.package_location(&p.id));
+            locs.push(project.location(p));
+            dirs.insert(p.id.clone(), p.clone());
         }
+    }
+    for p in &scan.nested {
+        if p.outer.as_ref().is_some_and(|o| conflicts.contains(o)) {
+            continue;
+        }
+        locs.push(project.location(p));
+        dirs.insert(p.id.clone(), p.clone());
     }
     let mut results = spec::load_many(&locs, env).into_iter();
     let root = results.next().unwrap_or(Err(SpecError::NoEvaluator))?;
@@ -128,17 +190,34 @@ pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Load
     let mut path_locs = Vec::new();
     for d in root.dependencies.iter().filter(|d| d.kind == DepKind::Path) {
         let rel = d.id.trim_end_matches('/').to_string();
-        let Some(id) = d.package_id().map(str::to_string) else { continue };
+        let Some(id) = d.package_id().map(str::to_string) else {
+            continue;
+        };
         let dir = project.root.join(&rel);
-        let dir = dir.canonicalize().map_err(|e| InstallError::Io { path: dir.clone(), source: e })?;
-        path_locs.push((rel.clone(), project.location_of(dir, &id, project.path_dep_lua_path(&rel))));
+        let dir = dir.canonicalize().map_err(|e| InstallError::Io {
+            path: dir.clone(),
+            source: e,
+        })?;
+        path_locs.push((
+            rel.clone(),
+            project.location_of(dir, &id, project.path_dep_lua_path(&rel)),
+        ));
     }
     let locs: Vec<SpecLocation> = path_locs.iter().map(|(_, l)| l.clone()).collect();
     let mut paths = BTreeMap::new();
     for ((rel, loc), r) in path_locs.into_iter().zip(spec::load_many(&locs, env)) {
         paths.insert(loc.id.clone(), (rel, r?));
     }
-    Ok(Loaded { project: project.clone(), root, workspace, installed, paths, conflicts })
+    Ok(Loaded {
+        project: project.clone(),
+        root,
+        workspace,
+        dirs,
+        shadowed: scan.shadowed,
+        installed,
+        paths,
+        conflicts,
+    })
 }
 
 /// What `install` reports as it goes.
@@ -146,11 +225,41 @@ pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Load
 pub enum Event {
     Resolving,
     LockWritten,
-    Fetching { id: String, version: Version },
-    Repairing { id: String, version: Version },
-    Removing { id: String, version: Version },
-    Replacing { id: String },
-    Restored { id: String },
+    Fetching {
+        id: String,
+        version: Version,
+    },
+    Repairing {
+        id: String,
+        version: Version,
+    },
+    Removing {
+        id: String,
+        version: Version,
+    },
+    Replacing {
+        id: String,
+    },
+    Restored {
+        id: String,
+    },
+    /// A materialized file: `content/...` or `bin/<name>`.
+    Writing {
+        path: String,
+        package: String,
+    },
+    /// A file no package provides any more.
+    RemovingFile {
+        path: String,
+    },
+    /// A file fpkg wrote that was changed since, left in place.
+    KeptModified {
+        path: String,
+    },
+    /// A symlink in a package's `content/` or binaries folder, not copied.
+    SkippedSymlink {
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,6 +273,15 @@ pub struct InstallReport {
     /// Why the lock was re-resolved, if it was.
     pub stale: Vec<Stale>,
     pub lock_written: bool,
+    /// Materialized files written (`content/...`, `bin/<name>`).
+    pub files_written: Vec<String>,
+    /// Materialized files removed because no package provides them any more.
+    pub files_removed: Vec<String>,
+    /// Recorded files left in place because they were changed after install.
+    pub files_kept: Vec<String>,
+    /// Binary modules not copied because the server folder is not known:
+    /// (package, file name).
+    pub binaries_skipped: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -176,7 +294,8 @@ pub struct InstallOptions {
 fn now_rfc3339() -> String {
     let t = time::OffsetDateTime::now_utc();
     let t = t.replace_nanosecond(0).unwrap_or(t);
-    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
+    t.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
 }
 
 /// Puts back packages whose replacement was interrupted between its two
@@ -184,13 +303,20 @@ fn now_rfc3339() -> String {
 pub fn recover_interrupted(project: &Project) -> Result<Vec<String>, InstallError> {
     let dir = project.packages_dir();
     let mut restored = Vec::new();
-    let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(restored) };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Ok(restored);
+    };
     for entry in rd.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(id) = name.strip_prefix(".fpkg-old-") else { continue };
+        let Some(id) = name.strip_prefix(".fpkg-old-") else {
+            continue;
+        };
         let dest = dir.join(id);
         if !dest.exists() {
-            std::fs::rename(entry.path(), &dest).map_err(|e| InstallError::Io { path: dest.clone(), source: e })?;
+            std::fs::rename(entry.path(), &dest).map_err(|e| InstallError::Io {
+                path: dest.clone(),
+                source: e,
+            })?;
             restored.push(id.to_string());
         }
     }
@@ -247,11 +373,20 @@ pub fn install(
 
     // 2. Fetch what is missing, different, or does not match its tree hash.
     let packages_dir = project.packages_dir();
-    std::fs::create_dir_all(&packages_dir).map_err(|e| InstallError::Io { path: packages_dir.clone(), source: e })?;
+    std::fs::create_dir_all(&packages_dir).map_err(|e| InstallError::Io {
+        path: packages_dir.clone(),
+        source: e,
+    })?;
     for entry in &lock.packages {
-        let (Source::Registry(url), Some(sha)) = (&entry.source, &entry.sha256) else { continue };
+        let (Source::Registry(url), Some(sha)) = (&entry.source, &entry.sha256) else {
+            continue;
+        };
         let dir = project.package_dir(&entry.id);
-        let marker = if dir.is_dir() { Marker::read(&dir)? } else { None };
+        let marker = if dir.is_dir() {
+            Marker::read(&dir)?
+        } else {
+            None
+        };
         let unmarked = dir.exists() && marker.is_none();
         if unmarked && !opts.force {
             return Err(InstallError::Conflict(vec![entry.id.clone()]));
@@ -262,40 +397,115 @@ pub fn install(
             && m.sha256.eq_ignore_ascii_case(sha)
         {
             if tree_matches(&dir, m) {
-                report.unchanged.push((entry.id.clone(), entry.version.clone()));
+                report
+                    .unchanged
+                    .push((entry.id.clone(), entry.version.clone()));
                 continue;
             }
             repair = true;
         }
         if unmarked {
-            progress(Event::Replacing { id: entry.id.clone() });
+            progress(Event::Replacing {
+                id: entry.id.clone(),
+            });
         }
         if repair {
-            progress(Event::Repairing { id: entry.id.clone(), version: entry.version.clone() });
+            progress(Event::Repairing {
+                id: entry.id.clone(),
+                version: entry.version.clone(),
+            });
         } else {
-            progress(Event::Fetching { id: entry.id.clone(), version: entry.version.clone() });
+            progress(Event::Fetching {
+                id: entry.id.clone(),
+                version: entry.version.clone(),
+            });
         }
         fetch_and_extract(project, entry, url, sha, registries, opts.env)?;
         match marker {
-            _ if repair => report.repaired.push((entry.id.clone(), entry.version.clone())),
-            Some(m) => report.updated.push((entry.id.clone(), m.version, entry.version.clone())),
+            _ if repair => report
+                .repaired
+                .push((entry.id.clone(), entry.version.clone())),
+            Some(m) => report
+                .updated
+                .push((entry.id.clone(), m.version, entry.version.clone())),
             None => report.added.push((entry.id.clone(), entry.version.clone())),
         }
     }
 
     // 3. Remove marked directories that the lock does not have.
-    let wanted: BTreeSet<&str> =
-        lock.packages.iter().filter(|p| matches!(p.source, Source::Registry(_))).map(|p| p.id.as_str()).collect();
+    let wanted: BTreeSet<&str> = lock
+        .packages
+        .iter()
+        .filter(|p| matches!(p.source, Source::Registry(_)))
+        .map(|p| p.id.as_str())
+        .collect();
     for (id, marker) in project.marked_dirs()? {
         if wanted.contains(id.as_str()) {
             continue;
         }
-        progress(Event::Removing { id: id.clone(), version: marker.version.clone() });
+        progress(Event::Removing {
+            id: id.clone(),
+            version: marker.version.clone(),
+        });
         let dir = project.package_dir(&id);
-        std::fs::remove_dir_all(&dir).map_err(|e| InstallError::Io { path: dir, source: e })?;
+        std::fs::remove_dir_all(&dir).map_err(|e| InstallError::Io {
+            path: dir,
+            source: e,
+        })?;
         report.removed.push((id, marker.version));
     }
+
+    // 4. Copy the packages' content/ and binary modules into place.
+    let sources = package_sources(project, &lock, &loaded, opts.env)?;
+    crate::files::materialize(project, &sources, opts.force, &mut report, progress)?;
     Ok(report)
+}
+
+/// Every package of the lock with its directory and binaries folder.
+fn package_sources(
+    project: &Project,
+    lock: &Lockfile,
+    loaded: &Loaded,
+    env: Env,
+) -> Result<Vec<crate::files::Source>, InstallError> {
+    let mut out = Vec::new();
+    let mut to_eval = Vec::new();
+    for entry in &lock.packages {
+        match &entry.source {
+            Source::Registry(_) => to_eval.push(project.package_location(&entry.id)),
+            Source::Workspace => {
+                let (dir, m) = match (loaded.dirs.get(&entry.id), loaded.workspace.get(&entry.id)) {
+                    (Some(d), Some(m)) => (d.dir.clone(), m),
+                    _ => continue,
+                };
+                out.push(crate::files::Source {
+                    id: entry.id.clone(),
+                    dir,
+                    binaries: m.binaries_dir().to_string(),
+                });
+            }
+            Source::Path(rel) => {
+                let Some((_, m)) = loaded.paths.get(&entry.id) else {
+                    continue;
+                };
+                out.push(crate::files::Source {
+                    id: entry.id.clone(),
+                    dir: project.root.join(rel),
+                    binaries: m.binaries_dir().to_string(),
+                });
+            }
+        }
+    }
+    for (loc, r) in to_eval.iter().zip(spec::load_many(&to_eval, env)) {
+        let m = r?;
+        out.push(crate::files::Source {
+            id: loc.id.clone(),
+            dir: loc.dir.clone(),
+            binaries: m.binaries_dir().to_string(),
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
 }
 
 /// Whether an installed directory still hashes to its marker's tree hash.
@@ -318,10 +528,17 @@ fn fetch_and_extract(
     // The staged spec must evaluate (with its final PACKAGE.__path__) to the
     // locked version; the marker records its tree hash.
     let check = |staged: &Path| -> Result<(), String> {
-        let loc = SpecLocation { dir: staged.to_path_buf(), ..project.package_location(&entry.id) };
-        let m = spec::load(&loc, env).map_err(|e| format!("its packagespec.lua does not evaluate: {e}"))?;
+        let loc = SpecLocation {
+            dir: staged.to_path_buf(),
+            ..project.package_location(&entry.id)
+        };
+        let m = spec::load(&loc, env)
+            .map_err(|e| format!("its packagespec.lua does not evaluate: {e}"))?;
         if m.version != entry.version {
-            return Err(format!("its packagespec.lua says version {}, the lock says {}", m.version, entry.version));
+            return Err(format!(
+                "its packagespec.lua says version {}, the lock says {}",
+                m.version, entry.version
+            ));
         }
         let tree_sha256 = crate::archive::tree_sha256(staged).map_err(|e| e.to_string())?;
         let marker = Marker {
@@ -335,8 +552,18 @@ fn fetch_and_extract(
         let path = staged.join(crate::archive::MARKER);
         std::fs::write(&path, marker.to_toml()).map_err(|e| format!("{}: {e}", path.display()))
     };
-    crate::archive::unpack_checked(&bytes, &entry.id, sha, &project.packages_dir(), None, &check)
-        .map_err(|source| InstallError::Archive { id: entry.id.clone(), source })
+    crate::archive::unpack_checked(
+        &bytes,
+        &entry.id,
+        sha,
+        &project.packages_dir(),
+        None,
+        &check,
+    )
+    .map_err(|source| InstallError::Archive {
+        id: entry.id.clone(),
+        source,
+    })
 }
 
 /// One difference `verify` found.
@@ -350,6 +577,10 @@ pub struct Problem {
 pub struct VerifyReport {
     pub ok: Vec<(String, Version)>,
     pub problems: Vec<Problem>,
+    /// Recorded materialized files that match.
+    pub files_ok: usize,
+    /// Recorded `bin/` files not checked because the server folder is not known.
+    pub bin_unchecked: Vec<String>,
 }
 
 /// `fpkg verify`: installed registry packages must match the lock and their
@@ -358,9 +589,15 @@ pub fn verify(project: &Project, env: Env) -> Result<VerifyReport, InstallError>
     let lock = Lockfile::read(&project.lock_path())?.ok_or(InstallError::NoLock)?;
     let mut report = VerifyReport::default();
     let mut problems = Vec::new();
-    let mut problem = |id: &str, message: String| problems.push(Problem { id: id.to_string(), message });
+    let mut problem = |id: &str, message: String| {
+        problems.push(Problem {
+            id: id.to_string(),
+            message,
+        })
+    };
     // Specs to evaluate, checked against the lock afterwards.
     let mut to_eval: Vec<(SpecLocation, Version)> = Vec::new();
+    let scan = project.scan()?;
     for entry in &lock.packages {
         let id = entry.id.as_str();
         match &entry.source {
@@ -383,13 +620,29 @@ pub fn verify(project: &Project, env: Env) -> Result<VerifyReport, InstallError>
                 };
                 let sha = entry.sha256.as_deref().unwrap_or_default();
                 if marker.version != entry.version || !marker.sha256.eq_ignore_ascii_case(sha) {
-                    problem(id, format!("is installed at {} ({}), the lock has {} ({})", marker.version, short(&marker.sha256), entry.version, short(sha)));
+                    problem(
+                        id,
+                        format!(
+                            "is installed at {} ({}), the lock has {} ({})",
+                            marker.version,
+                            short(&marker.sha256),
+                            entry.version,
+                            short(sha)
+                        ),
+                    );
                     continue;
                 }
                 match crate::archive::tree_sha256(&dir) {
                     Ok(t) if t.eq_ignore_ascii_case(&marker.tree_sha256) => {}
                     Ok(t) => {
-                        problem(id, format!("was modified after install: its files hash to {}, the marker has {}", short(&t), short(&marker.tree_sha256)));
+                        problem(
+                            id,
+                            format!(
+                                "was modified after install: its files hash to {}, the marker has {}",
+                                short(&t),
+                                short(&marker.tree_sha256)
+                            ),
+                        );
                         continue;
                     }
                     Err(e) => {
@@ -403,16 +656,35 @@ pub fn verify(project: &Project, env: Env) -> Result<VerifyReport, InstallError>
                 let (dir, loc) = match &entry.source {
                     Source::Path(rel) => {
                         let dir = project.root.join(rel);
-                        (dir.clone(), project.location_of(dir, id, project.path_dep_lua_path(rel)))
+                        (
+                            dir.clone(),
+                            project.location_of(dir, id, project.path_dep_lua_path(rel)),
+                        )
                     }
-                    _ => (project.package_dir(id), project.package_location(id)),
+                    _ => match scan.workspace().find(|p| p.id == id) {
+                        Some(p) => (p.dir.clone(), project.location(p)),
+                        None => (project.package_dir(id), project.package_location(id)),
+                    },
                 };
                 if !dir.join(spec::SPEC_FILE).is_file() {
-                    problem(id, format!("is locked as {} but {} has no spec", entry.source, dir.display()));
+                    problem(
+                        id,
+                        format!(
+                            "is locked as {} but {} has no spec",
+                            entry.source,
+                            dir.display()
+                        ),
+                    );
                     continue;
                 }
-                if matches!(entry.source, Source::Workspace) && Marker::read(&dir)?.is_some() {
-                    problem(id, "is locked as a workspace package but is installed from a registry".into());
+                if matches!(entry.source, Source::Workspace)
+                    && crate::project::read_link(&dir).is_none()
+                    && Marker::read(&dir)?.is_some()
+                {
+                    problem(
+                        id,
+                        "is locked as a workspace package but is installed from a registry".into(),
+                    );
                     continue;
                 }
                 to_eval.push((loc, entry.version.clone()));
@@ -423,15 +695,27 @@ pub fn verify(project: &Project, env: Env) -> Result<VerifyReport, InstallError>
     for ((loc, want), r) in to_eval.iter().zip(spec::load_many(&locs, env)) {
         match r {
             Ok(m) if &m.version == want => report.ok.push((loc.id.clone(), want.clone())),
-            Ok(m) => problem(&loc.id, format!("its spec says {}, the lock has {want}", m.version)),
+            Ok(m) => problem(
+                &loc.id,
+                format!("its spec says {}, the lock has {want}", m.version),
+            ),
             Err(e) => problem(&loc.id, format!("its spec does not evaluate: {e}")),
         }
     }
     for (id, marker) in project.marked_dirs()? {
         if lock.get(&id).is_none() {
-            problem(&id, format!("is installed ({}) but not in the lock", marker.version));
+            problem(
+                &id,
+                format!("is installed ({}) but not in the lock", marker.version),
+            );
         }
     }
+    let files = crate::files::verify(project)?;
+    for (id, message) in files.problems {
+        problem(&id, message);
+    }
+    report.files_ok = files.ok;
+    report.bin_unchecked = files.bin_unchecked;
     report.problems = problems;
     Ok(report)
 }

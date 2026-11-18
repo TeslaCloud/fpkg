@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-pub use check::{Diagnostic, Severity, check, is_known_license};
+pub use check::{Diagnostic, Severity, check, is_known_license, normal_rel};
 pub use eval::{EvalInput, Evaluation, LuaData, evaluate_here, sandbox_names};
 pub use process::{Evaluator, child_main, evaluator, set_evaluator};
 
@@ -46,7 +46,9 @@ impl FromStr for Env {
             "production" => Ok(Env::Production),
             "development" => Ok(Env::Development),
             "test" => Ok(Env::Test),
-            other => Err(format!("unknown environment '{other}' (production, development or test)")),
+            other => Err(format!(
+                "unknown environment '{other}' (production, development or test)"
+            )),
         }
     }
 }
@@ -56,7 +58,11 @@ pub enum SpecError {
     #[error("{file}: {message}")]
     Eval { file: String, message: String },
     #[error("{file}: the evaluator {status}{}", if stderr.is_empty() { String::new() } else { format!("\n{stderr}") })]
-    Crashed { file: String, status: String, stderr: String },
+    Crashed {
+        file: String,
+        status: String,
+        stderr: String,
+    },
     #[error("no spec evaluator: set FPKG_EVALUATOR to fpkg-eval-spec, or call spec::set_evaluator")]
     NoEvaluator,
     #[error("{file}: Package:describe(function(s) ... end) was never called")]
@@ -104,6 +110,9 @@ impl Dependency {
 pub struct Manifest {
     /// The directory name (the project id for the project manifest).
     pub id: String,
+    /// `s.id`, if the spec sets it.
+    #[serde(default)]
+    pub declared_id: Option<String>,
     pub name: String,
     pub version: Version,
     /// How many numeric components the spec wrote (1 to 3).
@@ -125,6 +134,10 @@ pub struct Manifest {
     pub serverside: bool,
     pub clientside: bool,
     pub reload: bool,
+    /// `s.binaries`: the folder, relative to the package directory, that holds
+    /// its binary modules, if the spec names one (`bin` otherwise).
+    #[serde(default)]
+    pub binaries: Option<String>,
     pub dependencies: Vec<Dependency>,
     pub resources: Vec<String>,
     pub client_env: Vec<(String, String)>,
@@ -152,7 +165,9 @@ mod date_serde {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<time::Date>, D::Error> {
         match Option::<String>::deserialize(d)? {
             None => Ok(None),
-            Some(s) => super::parse_date(&s).map(Some).ok_or_else(|| serde::de::Error::custom(format!("invalid date '{s}'"))),
+            Some(s) => super::parse_date(&s)
+                .map(Some)
+                .ok_or_else(|| serde::de::Error::custom(format!("invalid date '{s}'"))),
         }
     }
 }
@@ -163,6 +178,7 @@ pub fn format_date(d: time::Date) -> String {
 
 /// The field names Flux reads (singular, as stored).
 pub const KNOWN_FIELDS: &[&str] = &[
+    "id",
     "name",
     "version",
     "date",
@@ -179,23 +195,37 @@ pub const KNOWN_FIELDS: &[&str] = &[
     "serverside",
     "clientside",
     "reload",
+    "binary",
 ];
+
+/// The binaries folder of a package that does not name one.
+pub const DEFAULT_BINARIES: &str = "bin";
 
 impl Manifest {
     /// Builds the manifest from an evaluation. Fails when there is no
     /// `describe` call, no usable version, or an invalid constraint; other
     /// problems are kept in `problems` for `check`.
     pub fn from_evaluation(id: &str, file: &str, ev: Evaluation) -> Result<Manifest, SpecError> {
-        let invalid = |message: String| SpecError::Invalid { file: file.to_string(), message };
+        let invalid = |message: String| SpecError::Invalid {
+            file: file.to_string(),
+            message,
+        };
         if !ev.described {
-            return Err(SpecError::NotDescribed { file: file.to_string() });
+            return Err(SpecError::NotDescribed {
+                file: file.to_string(),
+            });
         }
         let mut problems = Vec::new();
         let f = &ev.fields;
         let version_written = match f.get("version") {
             Some(LuaData::String(s)) => s.clone(),
             None | Some(LuaData::Nil) => return Err(invalid("s.version is missing".into())),
-            Some(other) => return Err(invalid(format!("s.version must be a string, not a {}", other.type_name()))),
+            Some(other) => {
+                return Err(invalid(format!(
+                    "s.version must be a string, not a {}",
+                    other.type_name()
+                )));
+            }
         };
         let (version, version_components) =
             Version::parse_with_components(&version_written).map_err(|e| invalid(e.to_string()))?;
@@ -205,7 +235,10 @@ impl Manifest {
                 None | Some(LuaData::Nil) => None,
                 Some(LuaData::String(s)) => Some(s.clone()),
                 Some(other) => {
-                    problems.push(format!("s.{key} must be a string, not a {}", other.type_name()));
+                    problems.push(format!(
+                        "s.{key} must be a string, not a {}",
+                        other.type_name()
+                    ));
                     None
                 }
             }
@@ -220,14 +253,20 @@ impl Manifest {
                     .filter_map(|x| match x {
                         LuaData::String(s) => Some(s.clone()),
                         other => {
-                            problems.push(format!("s.{key} must hold strings, not a {}", other.type_name()));
+                            problems.push(format!(
+                                "s.{key} must hold strings, not a {}",
+                                other.type_name()
+                            ));
                             None
                         }
                     })
                     .collect(),
                 Some(LuaData::Map(m)) if m.is_empty() => Vec::new(),
                 Some(other) => {
-                    problems.push(format!("s.{key} must be a string or a list of strings, not a {}", other.type_name()));
+                    problems.push(format!(
+                        "s.{key} must be a string or a list of strings, not a {}",
+                        other.type_name()
+                    ));
                     Vec::new()
                 }
             }
@@ -237,7 +276,10 @@ impl Manifest {
                 None | Some(LuaData::Nil) => default,
                 Some(LuaData::Bool(b)) => *b,
                 Some(other) => {
-                    problems.push(format!("s.{key} must be true or false, not a {}", other.type_name()));
+                    problems.push(format!(
+                        "s.{key} must be true or false, not a {}",
+                        other.type_name()
+                    ));
                     default
                 }
             }
@@ -262,16 +304,29 @@ impl Manifest {
                 DepKind::Package
             };
             let constraint = match constraint {
-                Some(c) => Constraint::parse(c).map_err(|e| invalid(format!("s.depends '{dep}': {e}")))?,
+                Some(c) => {
+                    Constraint::parse(c).map_err(|e| invalid(format!("s.depends '{dep}': {e}")))?
+                }
                 None => Constraint::any(),
             };
-            dependencies.push(Dependency { id: dep.clone(), constraint, kind });
+            dependencies.push(Dependency {
+                id: dep.clone(),
+                constraint,
+                kind,
+            });
         }
 
-        let unknown_fields = f.keys().filter(|k| !KNOWN_FIELDS.contains(&k.as_str())).cloned().collect();
+        let unknown_fields = f
+            .keys()
+            .filter(|k| !KNOWN_FIELDS.contains(&k.as_str()))
+            .cloned()
+            .collect();
 
+        let declared_id = string("id", &mut problems);
+        let binaries = string("binary", &mut problems);
         Ok(Manifest {
             id: id.to_string(),
+            declared_id,
             name,
             version,
             version_components,
@@ -291,6 +346,7 @@ impl Manifest {
             clientside: boolean("clientside", false, &mut problems),
             // PackageInstance's default.
             reload: boolean("reload", true, &mut problems),
+            binaries,
             dependencies,
             resources: ev.resources,
             client_env: ev.client_env,
@@ -300,6 +356,11 @@ impl Manifest {
             problems,
             output: ev.output,
         })
+    }
+
+    /// The binaries folder: `s.binaries`, else `bin`.
+    pub fn binaries_dir(&self) -> &str {
+        self.binaries.as_deref().unwrap_or(DEFAULT_BINARIES)
     }
 
     /// The package dependencies (workspace or registry), without `.lua` files.
@@ -357,7 +418,12 @@ pub fn load_file(loc: &SpecLocation, env: Env, file: &Path) -> Result<Manifest, 
 }
 
 /// `load_file` with a given evaluator.
-pub fn load_with(evaluator: &Evaluator, loc: &SpecLocation, env: Env, file: &Path) -> Result<Manifest, SpecError> {
+pub fn load_with(
+    evaluator: &Evaluator,
+    loc: &SpecLocation,
+    env: Env,
+    file: &Path,
+) -> Result<Manifest, SpecError> {
     match evaluator {
         Evaluator::InProcess => load_here(loc, env, file),
         Evaluator::Process { program, args } => process::run(program, args, loc, env, file),
@@ -372,11 +438,15 @@ pub fn load_many(locs: &[SpecLocation], env: Env) -> Vec<Result<Manifest, SpecEr
 /// Evaluates in this process (the child's half, and trusted tests).
 pub fn load_here(loc: &SpecLocation, env: Env, file: &Path) -> Result<Manifest, SpecError> {
     let rel = format!("{}{}", loc.rel_dir(), SPEC_FILE);
-    let source = std::fs::read_to_string(file).map_err(|e| SpecError::Io { file: rel.clone(), message: e.to_string() })?;
+    let source = std::fs::read_to_string(file).map_err(|e| SpecError::Io {
+        file: rel.clone(),
+        message: e.to_string(),
+    })?;
     let ev = evaluate_here(&EvalInput {
         source,
         chunk_name: rel.clone(),
         project_root: loc.project_root.clone(),
+        package_dir: (!loc.is_project_manifest).then(|| loc.dir.clone()),
         package_path: loc.lua_path.clone(),
         project_id: loc.project_id.clone(),
         env,
@@ -404,8 +474,14 @@ impl fmt::Display for DepKind {
 /// Field values for display (`fpkg info`), in a stable order.
 pub fn display_fields(m: &Manifest) -> BTreeMap<&'static str, String> {
     let mut out = BTreeMap::new();
+    if let Some(id) = &m.declared_id {
+        out.insert("id", id.clone());
+    }
     out.insert("name", m.name.clone());
     out.insert("version", m.version.to_string());
+    if let Some(b) = &m.binaries {
+        out.insert("binaries", b.clone());
+    }
     if let Some(d) = m.date {
         out.insert("date", format_date(d));
     }
@@ -421,6 +497,31 @@ pub fn display_fields(m: &Manifest) -> BTreeMap<&'static str, String> {
         }
     }
     out
+}
+
+/// The binary modules in `folder` (relative to `dir`): the regular files
+/// directly in it whose name ends in `.dll`, sorted. Garry's Mod modules are
+/// `.dll` on every platform.
+pub fn binary_modules(dir: &Path, folder: &str) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir.join(folder)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| is_module_name(n))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Whether a file name is a binary module's (`*.dll`, any case).
+pub fn is_module_name(name: &str) -> bool {
+    name.len() > 4
+        && name
+            .get(name.len() - 4..)
+            .is_some_and(|e| e.eq_ignore_ascii_case(".dll"))
 }
 
 /// Is this path the spec file of a package directory?

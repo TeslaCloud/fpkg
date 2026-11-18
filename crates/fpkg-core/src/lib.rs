@@ -4,6 +4,7 @@
 pub mod archive;
 pub mod auth;
 pub mod config;
+pub mod files;
 mod id;
 pub mod install;
 pub mod lockfile;

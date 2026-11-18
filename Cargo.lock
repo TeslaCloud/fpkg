@@ -357,6 +357,7 @@ dependencies = [
  "clap",
  "fpkg-core",
  "fs-err",
+ "nl",
  "serde",
  "serde_json",
  "tempfile",

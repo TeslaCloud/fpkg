@@ -21,12 +21,19 @@ pub enum EditError {
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EditError::NoDescribe => write!(f, "there is no Package:describe(function(s) ... end) block"),
+            EditError::NoDescribe => {
+                write!(f, "there is no Package:describe(function(s) ... end) block")
+            }
             EditError::SeveralDescribe(n) => write!(f, "there are {n} Package:describe blocks"),
             EditError::NoEnd => write!(f, "the end) that closes Package:describe was not found"),
-            EditError::Conditional(line) => write!(f, "line {line} calls depends inside a conditional, loop or function"),
+            EditError::Conditional(line) => write!(
+                f,
+                "line {line} calls depends inside a conditional, loop or function"
+            ),
             EditError::Ambiguous(line, why) => write!(f, "line {line}: {why}"),
-            EditError::Unparsable(line) => write!(f, "line {line}: an unfinished string or comment"),
+            EditError::Unparsable(line) => {
+                write!(f, "line {line}: an unfinished string or comment")
+            }
             EditError::AlreadyPresent(id) => write!(f, "the project already depends on '{id}'"),
             EditError::NotPresent(id) => write!(f, "the project manifest has no s.depends '{id}'"),
         }
@@ -70,7 +77,10 @@ fn long_close(b: &[u8], i: usize, level: usize) -> Option<usize> {
     close.extend(std::iter::repeat_n(b'=', level));
     close.push(b']');
     let from = i + level + 2;
-    b.get(from..)?.windows(close.len()).position(|w| w == close.as_slice()).map(|p| from + p + close.len())
+    b.get(from..)?
+        .windows(close.len())
+        .position(|w| w == close.as_slice())
+        .map(|p| from + p + close.len())
 }
 
 fn lex(src: &str) -> Result<Vec<Token>, EditError> {
@@ -110,7 +120,11 @@ fn lex(src: &str) -> Result<Vec<Token>, EditError> {
             continue;
         }
         if c == b'/' && b.get(i + 1) == Some(&b'*') {
-            let end = b[i + 2..].windows(2).position(|w| w == b"*/").map(|p| i + 2 + p + 2).ok_or(EditError::Unparsable(line + 1))?;
+            let end = b[i + 2..]
+                .windows(2)
+                .position(|w| w == b"*/")
+                .map(|p| i + 2 + p + 2)
+                .ok_or(EditError::Unparsable(line + 1))?;
             line += lines_in(i, end);
             i = end;
             continue;
@@ -157,11 +171,13 @@ fn lex(src: &str) -> Result<Vec<Token>, EditError> {
             }
             i = j;
             Tok::Name(src[start..j].to_string())
-        } else if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit)) {
+        } else if c.is_ascii_digit() || (c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit))
+        {
             let mut j = i;
             while j < b.len() {
                 let x = b[j];
-                let exponent_sign = (x == b'+' || x == b'-') && matches!(b[j - 1], b'e' | b'E' | b'p' | b'P');
+                let exponent_sign =
+                    (x == b'+' || x == b'-') && matches!(b[j - 1], b'e' | b'E' | b'p' | b'P');
                 if x.is_ascii_alphanumeric() || x == b'.' || x == b'_' || exponent_sign {
                     j += 1;
                 } else {
@@ -175,7 +191,13 @@ fn lex(src: &str) -> Result<Vec<Token>, EditError> {
             i += 1;
             Tok::Punct(c as char)
         };
-        out.push(Token { tok, line: start_line, end_line: line, start, end: i });
+        out.push(Token {
+            tok,
+            line: start_line,
+            end_line: line,
+            start,
+            end: i,
+        });
     }
     Ok(out)
 }
@@ -206,6 +228,9 @@ struct Block {
     end_tok: Token,
     first_body_line: Option<usize>,
     calls: Vec<Call>,
+    /// Line ranges (0-based, inclusive) of the conditionals, loops and
+    /// functions inside the block.
+    nested: Vec<(usize, usize)>,
 }
 
 fn find_block(src: &str) -> Result<Block, EditError> {
@@ -237,12 +262,22 @@ fn find_block(src: &str) -> Result<Block, EditError> {
     let mut calls = Vec::new();
     let mut i = body;
     let mut end_tok = None;
+    let mut nested = Vec::new();
+    let mut opened = 0;
     while i < n {
         let t = &toks[i];
         match &t.tok {
-            Tok::Name(k) if matches!(k.as_str(), "function" | "do" | "if" | "repeat") => depth += 1,
+            Tok::Name(k) if matches!(k.as_str(), "function" | "do" | "if" | "repeat") => {
+                if depth == 1 {
+                    opened = t.line;
+                }
+                depth += 1
+            }
             Tok::Name(k) if matches!(k.as_str(), "end" | "until") => {
                 depth -= 1;
+                if depth == 1 {
+                    nested.push((opened, t.line));
+                }
                 if depth == 0 {
                     if !at(i + 1).is_some_and(|t| is_punct(t, ')')) {
                         return Err(EditError::NoEnd);
@@ -251,9 +286,10 @@ fn find_block(src: &str) -> Result<Block, EditError> {
                     break;
                 }
             }
-            Tok::Name(p) if *p == param
-                && at(i + 1).is_some_and(|t| is_punct(t, '.') || is_punct(t, ':'))
-                && at(i + 2).is_some_and(|t| is_name(t, "depends")) =>
+            Tok::Name(p)
+                if *p == param
+                    && at(i + 1).is_some_and(|t| is_punct(t, '.') || is_punct(t, ':'))
+                    && at(i + 2).is_some_and(|t| is_name(t, "depends")) =>
             {
                 let line = t.line + 1;
                 if depth > 1 {
@@ -264,7 +300,10 @@ fn find_block(src: &str) -> Result<Block, EditError> {
                     Some(Tok::Str(v, q)) => (v.clone(), *q, i + 3),
                     Some(Tok::Punct('(')) => {
                         let Some(Tok::Str(v, q)) = at(i + 4).map(|t| &t.tok) else {
-                            return Err(EditError::Ambiguous(line, "the first argument of depends is not a string literal"));
+                            return Err(EditError::Ambiguous(
+                                line,
+                                "the first argument of depends is not a string literal",
+                            ));
                         };
                         let mut level = 0;
                         let mut j = i + 3;
@@ -284,7 +323,12 @@ fn find_block(src: &str) -> Result<Block, EditError> {
                         }
                         (v.clone(), *q, j)
                     }
-                    _ => return Err(EditError::Ambiguous(line, "depends is used but not called with a string")),
+                    _ => {
+                        return Err(EditError::Ambiguous(
+                            line,
+                            "depends is used but not called with a string",
+                        ));
+                    }
                 };
                 // The call must have its lines to itself (a trailing `;` aside).
                 let mut after = last + 1;
@@ -294,10 +338,17 @@ fn find_block(src: &str) -> Result<Block, EditError> {
                 let shares_before = i > 0 && toks[i - 1].end_line == t.line;
                 let shares_after = at(after).is_some_and(|x| x.line == toks[last].end_line);
                 if shares_before || shares_after {
-                    return Err(EditError::Ambiguous(line, "the depends call shares its line with another statement"));
+                    return Err(EditError::Ambiguous(
+                        line,
+                        "the depends call shares its line with another statement",
+                    ));
                 }
                 let next = &toks[i + 3];
-                let gap = if next.line == dep.line { src[dep.end..next.start].to_string() } else { String::new() };
+                let gap = if next.line == dep.line {
+                    src[dep.end..next.start].to_string()
+                } else {
+                    String::new()
+                };
                 calls.push(Call {
                     id,
                     first_line: t.line,
@@ -313,8 +364,54 @@ fn find_block(src: &str) -> Result<Block, EditError> {
         i += 1;
     }
     let end_tok = end_tok.ok_or(EditError::NoEnd)?;
-    let first_body_line = toks[body..].iter().take_while(|t| t.start < end_tok.start).map(|t| t.line).find(|l| *l != describe_line);
-    Ok(Block { param, describe_line, end_tok, first_body_line, calls })
+    let first_body_line = toks[body..]
+        .iter()
+        .take_while(|t| t.start < end_tok.start)
+        .map(|t| t.line)
+        .find(|l| *l != describe_line);
+    Ok(Block {
+        param,
+        describe_line,
+        end_tok,
+        first_body_line,
+        calls,
+        nested,
+    })
+}
+
+/// A line that is only a commented-out top-level depends call of `id`
+/// (`-- s.depends 'gmsv_pg'`): its indentation, gap and quote.
+fn commented_call(line: &str, param: &str, id: &str) -> Option<(String, String, char)> {
+    let indent = indent_of(line).to_string();
+    let rest = line.trim_start().strip_prefix("--")?;
+    if rest.starts_with('[') || rest.starts_with('-') {
+        return None;
+    }
+    let code = rest.trim_start();
+    let toks = lex(code).ok()?;
+    let name_ok = toks.first().is_some_and(|t| is_name(t, param))
+        && toks
+            .get(1)
+            .is_some_and(|t| is_punct(t, '.') || is_punct(t, ':'))
+        && toks.get(2).is_some_and(|t| is_name(t, "depends"));
+    if !name_ok {
+        return None;
+    }
+    let (value, quote, last) = match toks.get(3).map(|t| &t.tok) {
+        Some(Tok::Str(v, q)) => (v, *q, 3),
+        Some(Tok::Punct('(')) => match (toks.get(4).map(|t| &t.tok), toks.last()) {
+            (Some(Tok::Str(v, q)), Some(close)) if is_punct(close, ')') => (v, *q, toks.len() - 1),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let trailing_ok =
+        toks.len() == last + 1 || (toks.len() == last + 2 && is_punct(&toks[last + 1], ';'));
+    if value != id || !trailing_ok || quote == '[' {
+        return None;
+    }
+    let gap = code[toks[2].end..toks[3].start].to_string();
+    Some((indent, gap, quote))
 }
 
 fn indent_of(line: &str) -> &str {
@@ -331,15 +428,28 @@ fn join(lines: Vec<String>, crlf: bool, trailing: bool) -> String {
 }
 
 /// The line `fpkg add` writes, given the call's spacing and quote style.
-pub fn depends_line(param: &str, gap: &str, quote: char, id: &str, constraint: Option<&str>) -> String {
+pub fn depends_line(
+    param: &str,
+    gap: &str,
+    quote: char,
+    id: &str,
+    constraint: Option<&str>,
+) -> String {
     match constraint {
         // `s.depends 'id', '~> 1.0'` would not parse, so constraints need
         // parentheses. A gap wider than one space is alignment and is kept.
         Some(c) => {
-            let gap = if gap.len() > 1 && !gap.contains('\t') { gap } else { "" };
+            let gap = if gap.len() > 1 && !gap.contains('\t') {
+                gap
+            } else {
+                ""
+            };
             format!("{param}.depends{gap}({quote}{id}{quote}, {quote}{c}{quote})")
         }
-        None => format!("{param}.depends{}{quote}{id}{quote}", if gap.is_empty() { " " } else { gap }),
+        None => format!(
+            "{param}.depends{}{quote}{id}{quote}",
+            if gap.is_empty() { " " } else { gap }
+        ),
     }
 }
 
@@ -353,25 +463,55 @@ pub fn add(src: &str, id: &str, constraint: Option<&str>) -> Result<String, Edit
         return Err(EditError::AlreadyPresent(id.to_string()));
     }
     let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    // A commented-out call of the same id at the top of the block (a template's
+    // `-- s.depends 'gmsv_pg'`) is uncommented rather than repeated.
+    let body = block.describe_line + 1..block.end_tok.line;
+    let in_nested = |l: usize| block.nested.iter().any(|(a, b)| *a < l && l < *b);
+    if let Some((l, (indent, gap, quote))) = body
+        .filter(|l| !in_nested(*l))
+        .find_map(|l| commented_call(lines[l], &block.param, id).map(|c| (l, c)))
+    {
+        out[l] = format!(
+            "{indent}{}",
+            depends_line(&block.param, &gap, quote, id, constraint)
+        );
+        return Ok(join(out, crlf, trailing));
+    }
     match block.calls.last() {
         Some(last) => {
             let indent = indent_of(lines[last.first_line]);
-            let new = format!("{indent}{}", depends_line(&block.param, &last.gap, last.quote, id, constraint));
+            let new = format!(
+                "{indent}{}",
+                depends_line(&block.param, &last.gap, last.quote, id, constraint)
+            );
             out.insert(last.last_line + 1, new);
         }
         None => {
             let end_line = block.end_tok.line;
             let end_text = lines.get(end_line).copied().unwrap_or("");
-            if end_line == block.describe_line || !end_text[..block.end_tok.start - line_start(src, end_line)].trim().is_empty() {
-                return Err(EditError::Ambiguous(end_line + 1, "the closing end) does not start its line"));
+            if end_line == block.describe_line
+                || !end_text[..block.end_tok.start - line_start(src, end_line)]
+                    .trim()
+                    .is_empty()
+            {
+                return Err(EditError::Ambiguous(
+                    end_line + 1,
+                    "the closing end) does not start its line",
+                ));
             }
             let indent = match block.first_body_line {
                 Some(l) if l < end_line => indent_of(lines[l]).to_string(),
                 _ => format!("{}  ", indent_of(lines[block.describe_line])),
             };
-            let new = format!("{indent}{}", depends_line(&block.param, "", '\'', id, constraint));
+            let new = format!(
+                "{indent}{}",
+                depends_line(&block.param, "", '\'', id, constraint)
+            );
             let mut at = end_line;
-            if end_line > 0 && !lines[end_line - 1].trim().is_empty() && end_line - 1 != block.describe_line {
+            if end_line > 0
+                && !lines[end_line - 1].trim().is_empty()
+                && end_line - 1 != block.describe_line
+            {
                 out.insert(at, String::new());
                 at += 1;
             }
@@ -385,7 +525,10 @@ fn line_start(src: &str, line: usize) -> usize {
     if line == 0 {
         return 0;
     }
-    src.match_indices('\n').nth(line - 1).map(|(i, _)| i + 1).unwrap_or(src.len())
+    src.match_indices('\n')
+        .nth(line - 1)
+        .map(|(i, _)| i + 1)
+        .unwrap_or(src.len())
 }
 
 /// Removes every top-level depends call naming `id`.
@@ -398,8 +541,16 @@ pub fn remove(src: &str, id: &str) -> Result<String, EditError> {
     if hits.is_empty() {
         return Err(EditError::NotPresent(id.to_string()));
     }
-    let drop = |i: usize| hits.iter().any(|c| (c.first_line..=c.last_line).contains(&i));
-    let out: Vec<String> = lines.iter().enumerate().filter(|(i, _)| !drop(*i)).map(|(_, s)| s.to_string()).collect();
+    let drop = |i: usize| {
+        hits.iter()
+            .any(|c| (c.first_line..=c.last_line).contains(&i))
+    };
+    let out: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop(*i))
+        .map(|(_, s)| s.to_string())
+        .collect();
     Ok(join(out, crlf, trailing))
 }
 
@@ -416,19 +567,28 @@ mod tests {
             out,
             "Package:describe(function(s)\n  s.name        = 'Flux'\n  s.version     = '0.9.0'\n\n  s.depends     'sfs'\n  s.depends     'cable'\n  s.depends     ('yaml', '~> 1.2')\nend)\n"
         );
-        assert_eq!(add(FLUX, "sfs", None), Err(EditError::AlreadyPresent("sfs".into())));
+        assert_eq!(
+            add(FLUX, "sfs", None),
+            Err(EditError::AlreadyPresent("sfs".into()))
+        );
     }
 
     #[test]
     fn adds_before_end_without_depends() {
         let src = "Package:describe(function(spec)\n    spec.name = \"X\"\nend)";
-        assert_eq!(add(src, "sfs", Some("~> 7.0")).unwrap(), "Package:describe(function(spec)\n    spec.name = \"X\"\n\n    spec.depends('sfs', '~> 7.0')\nend)");
+        assert_eq!(
+            add(src, "sfs", Some("~> 7.0")).unwrap(),
+            "Package:describe(function(spec)\n    spec.name = \"X\"\n\n    spec.depends('sfs', '~> 7.0')\nend)"
+        );
     }
 
     #[test]
     fn single_space_is_not_alignment() {
         let src = "Package:describe(function(s)\n  s.depends 'cable'\nend)\n";
-        assert_eq!(add(src, "yaml", Some("~> 1.2")).unwrap(), "Package:describe(function(s)\n  s.depends 'cable'\n  s.depends('yaml', '~> 1.2')\nend)\n");
+        assert_eq!(
+            add(src, "yaml", Some("~> 1.2")).unwrap(),
+            "Package:describe(function(s)\n  s.depends 'cable'\n  s.depends('yaml', '~> 1.2')\nend)\n"
+        );
     }
 
     #[test]
@@ -436,12 +596,18 @@ mod tests {
         let out = remove(FLUX, "sfs").unwrap();
         assert!(!out.contains("'sfs'"));
         assert!(out.contains("'cable'"));
-        assert_eq!(remove(FLUX, "nope"), Err(EditError::NotPresent("nope".into())));
+        assert_eq!(
+            remove(FLUX, "nope"),
+            Err(EditError::NotPresent("nope".into()))
+        );
         let with = add(FLUX, "yaml", Some("~> 1.2")).unwrap();
         assert_eq!(remove(&with, "yaml").unwrap(), FLUX);
         // Multi-line calls go whole.
         let multi = "Package:describe(function(s)\n  s.depends(\n    'a',\n    '~> 1.0'\n  )\n  s.depends 'b'\nend)\n";
-        assert_eq!(remove(multi, "a").unwrap(), "Package:describe(function(s)\n  s.depends 'b'\nend)\n");
+        assert_eq!(
+            remove(multi, "a").unwrap(),
+            "Package:describe(function(s)\n  s.depends 'b'\nend)\n"
+        );
     }
 
     #[test]
@@ -449,7 +615,10 @@ mod tests {
         let src = "Package:describe(function(s)\n  --[[ s.depends 'b'\n  end) ]]\n  s.summary = \"s.depends 'c'\"\n  // s.depends 'd'\n  /* s.depends 'e' */\n  s.depends 'a'\nend)\n";
         assert_eq!(remove(src, "b"), Err(EditError::NotPresent("b".into())));
         let out = add(src, "b", None).unwrap();
-        assert!(out.ends_with("  s.depends 'a'\n  s.depends 'b'\nend)\n"), "{out}");
+        assert!(
+            out.ends_with("  s.depends 'a'\n  s.depends 'b'\nend)\n"),
+            "{out}"
+        );
         assert!(remove(&out, "b").unwrap() == src);
     }
 
@@ -466,11 +635,27 @@ mod tests {
         let inline = "Package:describe(function(s)\n  s.version = '1.0.0'\n  if X then s.depends 'dev' end\nend)\n";
         assert_eq!(remove(inline, "dev"), Err(EditError::Conditional(3)));
         let one_line = "Package:describe(function(s)\n  s.depends 'c'; s.depends 'b'\nend)\n";
-        assert!(matches!(remove(one_line, "b"), Err(EditError::Ambiguous(2, _))));
+        assert!(matches!(
+            remove(one_line, "b"),
+            Err(EditError::Ambiguous(2, _))
+        ));
         let computed = "Package:describe(function(s)\n  s.depends(NAME)\nend)\n";
-        assert!(matches!(add(computed, "a", None), Err(EditError::Ambiguous(2, _))));
-        assert_eq!(add("Package:describe(function(s)\n  s.name = 'x'\n", "a", None), Err(EditError::NoEnd));
-        assert!(matches!(add("Package:describe(function(s)\n  s.name = 'x\nend)", "a", None), Err(EditError::Unparsable(_))));
+        assert!(matches!(
+            add(computed, "a", None),
+            Err(EditError::Ambiguous(2, _))
+        ));
+        assert_eq!(
+            add("Package:describe(function(s)\n  s.name = 'x'\n", "a", None),
+            Err(EditError::NoEnd)
+        );
+        assert!(matches!(
+            add(
+                "Package:describe(function(s)\n  s.name = 'x\nend)",
+                "a",
+                None
+            ),
+            Err(EditError::Unparsable(_))
+        ));
     }
 
     #[test]
@@ -478,15 +663,81 @@ mod tests {
         // The first body line is indented differently from the depends lines.
         let src = "Package:describe(function(s)\n      s.name = 'x'\n  s.depends 'a'\nend)\n";
         let out = add(src, "b", None).unwrap();
-        assert_eq!(out, "Package:describe(function(s)\n      s.name = 'x'\n  s.depends 'a'\n  s.depends 'b'\nend)\n");
-        assert_eq!(remove(src, "a").unwrap(), "Package:describe(function(s)\n      s.name = 'x'\nend)\n");
+        assert_eq!(
+            out,
+            "Package:describe(function(s)\n      s.name = 'x'\n  s.depends 'a'\n  s.depends 'b'\nend)\n"
+        );
+        assert_eq!(
+            remove(src, "a").unwrap(),
+            "Package:describe(function(s)\n      s.name = 'x'\nend)\n"
+        );
     }
 
     #[test]
     fn nested_functions_are_followed() {
         let src = "Package:describe(function(s)\n  local f = function() return 1 end\n  for i = 1, 2 do end\n  s.depends 'a'\nend)\nprint('after')\n";
         let out = add(src, "b", None).unwrap();
-        assert!(out.contains("  s.depends 'a'\n  s.depends 'b'\nend)\nprint('after')\n"), "{out}");
+        assert!(
+            out.contains("  s.depends 'a'\n  s.depends 'b'\nend)\nprint('after')\n"),
+            "{out}"
+        );
+    }
+
+    const TEMPLATE: &str = "Package:describe(function(s)\n  s.name        = 'My Schema'\n  s.version     = '0.1.0'\n\n  s.depends('flux', '~> 0.9')\n\n  -- Uncomment the dependency of the database driver the server uses, then run `fpkg install`.\n  -- SQLite needs none. MySQL and MariaDB use mysqloo, which is not an fpkg package yet:\n  -- copy its module to garrysmod/lua/bin by hand.\n  -- s.depends 'gmsv_pg'\nend)\n";
+
+    #[test]
+    fn uncomments_a_commented_depends() {
+        let out = add(TEMPLATE, "gmsv_pg", Some("~> 2.0")).unwrap();
+        let want = TEMPLATE.replace(
+            "  -- s.depends 'gmsv_pg'\n",
+            "  s.depends('gmsv_pg', '~> 2.0')\n",
+        );
+        assert_eq!(out, want);
+        assert_eq!(out.matches("gmsv_pg").count(), 1, "no duplicate: {out}");
+        assert!(
+            out.contains("  -- copy its module to garrysmod/lua/bin by hand.\n"),
+            "the comment text stays"
+        );
+        assert_eq!(
+            add(&out, "gmsv_pg", None),
+            Err(EditError::AlreadyPresent("gmsv_pg".into()))
+        );
+        let plain = add(TEMPLATE, "gmsv_pg", None).unwrap();
+        assert!(plain.contains("\n  s.depends 'gmsv_pg'\nend)\n"), "{plain}");
+        // Another id is added after the last real call; the comment is untouched.
+        let other = add(TEMPLATE, "sfs", Some("~> 7.0")).unwrap();
+        assert!(
+            other.contains(
+                "  s.depends('flux', '~> 0.9')\n  s.depends('sfs', '~> 7.0')\n\n  -- Uncomment"
+            ),
+            "{other}"
+        );
+        assert!(other.contains("  -- s.depends 'gmsv_pg'\n"));
+        // remove ignores the comment.
+        assert_eq!(
+            remove(TEMPLATE, "gmsv_pg"),
+            Err(EditError::NotPresent("gmsv_pg".into()))
+        );
+        let removed = remove(&out, "gmsv_pg").unwrap();
+        assert!(!removed.contains("gmsv_pg"));
+    }
+
+    #[test]
+    fn commented_depends_inside_a_conditional_is_left_alone() {
+        let src = "Package:describe(function(s)\n  s.depends 'a'\n  if IS_DEVELOPMENT then\n    -- s.depends 'b'\n  end\nend)\n";
+        let out = add(src, "b", None).unwrap();
+        assert!(out.contains("    -- s.depends 'b'\n"), "{out}");
+        assert!(
+            out.contains("  s.depends 'a'\n  s.depends 'b'\n  if"),
+            "{out}"
+        );
+        let not_a_call =
+            "Package:describe(function(s)\n  s.depends 'a'\n  -- s.depends 'b' is optional\nend)\n";
+        assert!(
+            add(not_a_call, "b", None)
+                .unwrap()
+                .contains("  -- s.depends 'b' is optional\n")
+        );
     }
 
     #[test]

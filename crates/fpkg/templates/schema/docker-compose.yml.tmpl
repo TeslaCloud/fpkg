@@ -1,0 +1,98 @@
+# Runs the {{title}} schema on a dedicated server in a container. This checkout
+# is mounted as the gamemode, so changes to the code are picked up by the Lua
+# refresh of the running server. Run "fpkg install" in it first.
+#
+#   docker compose up                       SQLite, kept in the "sqlite" volume
+#   docker compose --profile postgres up    with a PostgreSQL server
+#   docker compose --profile mariadb up     with a MariaDB server
+#
+# A database server of a profile is only used once config/database.local.yml
+# names it, see README.md, which also says how to pick the environment.
+#
+# The server is published on FLUX_PORT of every address of the host. It is kept
+# off the master server list and does not answer server browser queries, so
+# connect to it with "connect localhost" (or the address of the host) from the
+# game console.
+#
+# "docker compose attach server" opens the server console; Ctrl+P, Ctrl+Q leaves
+# it again. Stopping the container kills the server right away, enter "quit" in
+# the console if you need it to shut down cleanly. "docker compose down -v"
+# deletes the databases and all other data in the volumes.
+#
+# Settings, taken from the environment or from an .env file next to this one:
+#
+#   FLUX_MAP     map to start on (gm_construct)
+#   FLUX_PORT    port on the host (27015)
+#
+# Packages linked with "fpkg link" point outside of the container: bind mount
+# the folder each one resolves to on the host at
+# /home/steam/flux_server/garrysmod/gamemodes/{{id}}/packages/<id> in
+# docker-compose.override.yml, which Compose merges in and Git ignores.
+#
+# The owner of the files in the checkout needs to have the user ID 1000, which
+# is the one the server runs as.
+
+services:
+  server:
+    build: .
+    image: {{id}}
+    init: true
+    tty: true
+    stdin_open: true
+    command: ["+map", "${FLUX_MAP:-gm_construct}", "+maxplayers", "16", "-tickrate", "30", "+hide_server", "1"]
+    ports:
+      - "${FLUX_PORT:-27015}:27015/udp"
+      - "${FLUX_PORT:-27015}:27015/tcp"
+    volumes:
+      - .:/home/steam/flux_server/garrysmod/gamemodes/{{id}}
+      - sqlite:/home/steam/sqlite
+      - data:/home/steam/flux_server/garrysmod/data
+      - settings:/home/steam/flux_server/garrysmod/settings/flux
+      # Workshop downloads. They fail when garrysmod/cache is a mount instead.
+      - workshop:/home/steam/flux_server/steam_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      mariadb:
+        condition: service_healthy
+        required: false
+
+  postgres:
+    image: postgres:18
+    profiles: [postgres]
+    environment:
+      POSTGRES_USER: flux
+      POSTGRES_PASSWORD: flux
+      POSTGRES_DB: flux
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "flux", "-d", "flux"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mariadb:
+    image: mariadb:11.8
+    profiles: [mariadb]
+    environment:
+      MARIADB_USER: flux
+      MARIADB_PASSWORD: flux
+      MARIADB_DATABASE: flux
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  sqlite:
+  data:
+  settings:
+  workshop:
+  postgres:
+  mariadb:

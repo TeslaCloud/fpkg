@@ -1,0 +1,6 @@
+--- Server part of the {{title}} addon, included after the shared part. Writes to the server
+-- console once the gamemode has initialized.
+
+hook.Add('Initialize', '{{id}}', function()
+  {{global}}.log('Loaded on the server.')
+end)

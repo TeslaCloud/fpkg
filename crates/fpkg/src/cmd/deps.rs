@@ -26,16 +26,25 @@ fn registries_for(ctx: &Ctx, project: &Project) -> Result<Registries> {
 fn print_changes(ctx: &Ctx, old: Option<&Lockfile>, new: &Lockfile) {
     for p in &new.packages {
         match old.and_then(|o| o.get(&p.id)) {
-            None => ctx.out.status("Locking", &format!("{} {}", p.id, p.version)),
-            Some(o) if o.version != p.version => ctx.out.status("Updating", &format!("{} {} -> {}", p.id, o.version, p.version)),
-            Some(o) if o.source != p.source => ctx.out.status("Updating", &format!("{} {} ({} -> {})", p.id, p.version, o.source, p.source)),
+            None => ctx
+                .out
+                .status("Locking", &format!("{} {}", p.id, p.version)),
+            Some(o) if o.version != p.version => ctx.out.status(
+                "Updating",
+                &format!("{} {} -> {}", p.id, o.version, p.version),
+            ),
+            Some(o) if o.source != p.source => ctx.out.status(
+                "Updating",
+                &format!("{} {} ({} -> {})", p.id, p.version, o.source, p.source),
+            ),
             Some(_) => {}
         }
     }
     if let Some(old) = old {
         for p in &old.packages {
             if new.get(&p.id).is_none() {
-                ctx.out.status("Removing", &format!("{} {}", p.id, p.version));
+                ctx.out
+                    .status("Removing", &format!("{} {}", p.id, p.version));
             }
         }
     }
@@ -53,7 +62,12 @@ fn lock_json(lock: &Lockfile) -> serde_json::Value {
 /// Resolves (keeping what `release` does not release) and writes the lock.
 /// Unmarked directories count as workspace packages: locking is how a hand
 /// copy becomes a deliberate shadow of a registry package.
-fn relock(ctx: &Ctx, project: &Project, registries: &Registries, release: Release) -> Result<Lockfile> {
+fn relock(
+    ctx: &Ctx,
+    project: &Project,
+    registries: &Registries,
+    release: Release,
+) -> Result<Lockfile> {
     let old = Lockfile::read(&project.lock_path())?;
     let loaded = load(project, ctx.env, None)?;
     let new = loaded.resolve(old.as_ref(), release, registries)?;
@@ -71,7 +85,8 @@ pub fn lock(ctx: &Ctx) -> Result<()> {
     if ctx.out.json {
         ctx.out.json(&lock_json(&new));
     } else {
-        ctx.out.note(&format!("fpkg.lock: {} packages", new.packages.len()));
+        ctx.out
+            .note(&format!("fpkg.lock: {} packages", new.packages.len()));
     }
     Ok(())
 }
@@ -97,9 +112,15 @@ pub fn update(ctx: &Ctx, ids: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn install_with(ctx: &Ctx, project: &Project, registries: &Registries, opts: InstallOptions) -> Result<install::InstallReport> {
+fn install_with(
+    ctx: &Ctx,
+    project: &Project,
+    registries: &Registries,
+    opts: InstallOptions,
+) -> Result<install::InstallReport> {
     let out = ctx.out;
-    let mut progress = |e: Event| match e {
+    let mut progress = |e: Event| {
+        match e {
         Event::Resolving => out.status("Resolving", "dependencies"),
         Event::LockWritten => out.status("Locking", "fpkg.lock"),
         Event::Fetching { id, version } => out.status("Installing", &format!("{id} {version}")),
@@ -109,26 +130,62 @@ fn install_with(ctx: &Ctx, project: &Project, registries: &Registries, opts: Ins
             out.status("Repairing", &format!("{id} {version} (its files no longer match the install)"))
         }
         Event::Restored { id } => out.status("Restored", &format!("packages/{id} from an interrupted install")),
+        Event::Writing { path, package } => out.verbose(&format!("copying {path} ({package})")),
+        Event::RemovingFile { path } => out.verbose(&format!("removing {path} (no package provides it any more)")),
+        Event::KeptModified { path } => {
+            out.warn(&format!("{path} is no longer provided by any package but was changed after install; left in place"))
+        }
+        Event::SkippedSymlink { path } => out.warn(&format!("{} is a symlink; not copied", path.display())),
+    }
     };
     let report = install::install(project, opts, registries, &mut progress)?;
     for s in &report.stale {
         out.verbose(&format!("fpkg.lock was stale: {s}"));
+    }
+    if !report.binaries_skipped.is_empty() {
+        let list = report
+            .binaries_skipped
+            .iter()
+            .map(|(p, n)| format!("{n} ({p})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.note(&format!(
+            "note: binary modules were not copied to garrysmod/lua/bin/, because the server folder is not known: {list}\n      run fpkg install inside the server folder, or pass --server <server folder>"
+        ));
     }
     Ok(report)
 }
 
 fn print_report(ctx: &Ctx, r: &install::InstallReport) {
     if ctx.out.json {
-        let pairs = |v: &[(String, fpkg_core::Version)]| v.iter().map(|(i, v)| json!({ "id": i, "version": v.to_string() })).collect::<Vec<_>>();
-        let updated: Vec<_> =
-            r.updated.iter().map(|(i, a, b)| json!({ "id": i, "from": a.to_string(), "to": b.to_string() })).collect();
-        ctx.out.json(&json!({
+        let pairs = |v: &[(String, fpkg_core::Version)]| {
+            v.iter()
+                .map(|(i, v)| json!({ "id": i, "version": v.to_string() }))
+                .collect::<Vec<_>>()
+        };
+        let updated: Vec<_> = r
+            .updated
+            .iter()
+            .map(|(i, a, b)| json!({ "id": i, "from": a.to_string(), "to": b.to_string() }))
+            .collect();
+        let skipped: Vec<_> = r
+            .binaries_skipped
+            .iter()
+            .map(|(p, n)| json!({ "package": p, "file": n }))
+            .collect();
+        ctx.emit_json(json!({
             "added": pairs(&r.added), "updated": updated, "repaired": pairs(&r.repaired),
             "removed": pairs(&r.removed), "unchanged": pairs(&r.unchanged), "lock_written": r.lock_written,
+            "files_written": r.files_written, "files_removed": r.files_removed, "files_kept": r.files_kept,
+            "binaries_skipped": skipped,
         }));
         return;
     }
-    let repaired = if r.repaired.is_empty() { String::new() } else { format!("{} repaired, ", r.repaired.len()) };
+    let repaired = if r.repaired.is_empty() {
+        String::new()
+    } else {
+        format!("{} repaired, ", r.repaired.len())
+    };
     ctx.out.note(&format!(
         "{} added, {} updated, {repaired}{} removed, {} unchanged",
         r.added.len(),
@@ -136,10 +193,21 @@ fn print_report(ctx: &Ctx, r: &install::InstallReport) {
         r.removed.len(),
         r.unchanged.len()
     ));
+    if !r.files_written.is_empty() || !r.files_removed.is_empty() {
+        ctx.out.note(&format!(
+            "{} files copied, {} removed",
+            r.files_written.len(),
+            r.files_removed.len()
+        ));
+    }
 }
 
 pub fn install(ctx: &Ctx, locked: bool, force: bool) -> Result<()> {
-    let project = ctx.project()?;
+    ctx.for_each_project(false, &mut |p| install_one(ctx, p, locked, force))
+}
+
+fn install_one(ctx: &Ctx, project: &Project, locked: bool, force: bool) -> Result<()> {
+    let project = project.clone();
     let config = ctx.config(Some(&project))?;
     let mut registries = ctx.registries(&config)?;
     // An explicit --registry also serves the archives of every lock entry: a
@@ -147,18 +215,44 @@ pub fn install(ctx: &Ctx, locked: bool, force: bool) -> Result<()> {
     if let Some(url) = &ctx.registry_flag {
         registries = registries.with_mirror(url)?;
     }
-    let report = install_with(ctx, &project, &registries, InstallOptions { locked, force, env: ctx.env })?;
+    let report = install_with(
+        ctx,
+        &project,
+        &registries,
+        InstallOptions {
+            locked,
+            force,
+            env: ctx.env,
+        },
+    )?;
     print_report(ctx, &report);
     Ok(())
 }
 
 pub fn verify(ctx: &Ctx) -> Result<()> {
-    let project = ctx.project()?;
-    let report = install::verify(&project, ctx.env)?;
+    ctx.for_each_project(false, &mut |p| verify_one(ctx, p))
+}
+
+fn verify_one(ctx: &Ctx, project: &Project) -> Result<()> {
+    let report = install::verify(project, ctx.env)?;
+    if !report.bin_unchecked.is_empty() {
+        ctx.out.note(&format!(
+            "{} recorded binary modules not checked: the server folder is not known (run fpkg verify inside it, or pass --server <dir>)",
+            report.bin_unchecked.len()
+        ));
+    }
     if ctx.out.json {
-        let ok: Vec<_> = report.ok.iter().map(|(i, v)| json!({ "id": i, "version": v.to_string() })).collect();
-        let problems: Vec<_> = report.problems.iter().map(|p| json!({ "id": p.id, "message": p.message })).collect();
-        ctx.out.json(&json!({ "ok": ok, "problems": problems }));
+        let ok: Vec<_> = report
+            .ok
+            .iter()
+            .map(|(i, v)| json!({ "id": i, "version": v.to_string() }))
+            .collect();
+        let problems: Vec<_> = report
+            .problems
+            .iter()
+            .map(|p| json!({ "id": p.id, "message": p.message }))
+            .collect();
+        ctx.emit_json(json!({ "ok": ok, "problems": problems, "files_ok": report.files_ok, "bin_unchecked": report.bin_unchecked }));
     } else {
         for (id, v) in &report.ok {
             ctx.out.verbose(&format!("ok {id} {v}"));
@@ -167,18 +261,42 @@ pub fn verify(ctx: &Ctx) -> Result<()> {
             ctx.out.error(&format!("{} {}", p.id, p.message));
         }
         if report.problems.is_empty() {
-            ctx.out.note(&format!("{} packages match fpkg.lock", report.ok.len()));
+            let files = if report.files_ok > 0 {
+                format!(", {} copied files match", report.files_ok)
+            } else {
+                String::new()
+            };
+            ctx.out.note(&format!(
+                "{} packages match fpkg.lock{files}",
+                report.ok.len()
+            ));
         }
     }
     if report.problems.is_empty() {
         Ok(())
     } else {
-        Err(exit(EXIT_VERIFY, format!("{} of {} packages do not match fpkg.lock", report.problems.len(), report.problems.len() + report.ok.len())))
+        Err(exit(
+            EXIT_VERIFY,
+            format!(
+                "{} of {} packages do not match fpkg.lock",
+                report.problems.len(),
+                report.problems.len() + report.ok.len()
+            ),
+        ))
     }
 }
 
-fn manual_edit(ctx: &Ctx, project: &Project, e: &EditError, what: &str, line: &str) -> anyhow::Error {
-    ctx.out.error(&format!("cannot edit {} automatically: {e}", project.manifest_path().display()));
+fn manual_edit(
+    ctx: &Ctx,
+    project: &Project,
+    e: &EditError,
+    what: &str,
+    line: &str,
+) -> anyhow::Error {
+    ctx.out.error(&format!(
+        "cannot edit {} automatically: {e}",
+        project.manifest_path().display()
+    ));
     eprintln!("{what} inside Package:describe(function(s) ... end):\n\n    {line}\n");
     exit_silent(EXIT_HUMAN)
 }
@@ -201,7 +319,12 @@ pub fn add(ctx: &Ctx, spec_arg: &str) -> Result<()> {
     PackageId::new(id)?;
     let project = ctx.project()?;
     let loaded = load(&project, ctx.env, None)?;
-    if loaded.root.dependencies.iter().any(|d| d.kind == DepKind::Package && d.id == id) {
+    if loaded
+        .root
+        .dependencies
+        .iter()
+        .any(|d| d.kind == DepKind::Package && d.id == id)
+    {
         bail!("the project already depends on {id}");
     }
     let registries = registries_for(ctx, &project)?;
@@ -212,10 +335,14 @@ pub fn add(ctx: &Ctx, spec_arg: &str) -> Result<()> {
                 Some(m) => m.version.clone(),
                 None => {
                     let reg = registries.default_registry()?;
-                    let doc = reg
-                        .package(&PackageId::new(id)?)?
-                        .ok_or_else(|| anyhow!("{id} is not a workspace package and not on {}", registries.default_url()))?;
-                    doc.newest().ok_or_else(|| anyhow!("{id} has no versions that are not yanked"))?
+                    let doc = reg.package(&PackageId::new(id)?)?.ok_or_else(|| {
+                        anyhow!(
+                            "{id} is not a workspace package and not on {}",
+                            registries.default_url()
+                        )
+                    })?;
+                    doc.newest()
+                        .ok_or_else(|| anyhow!("{id} has no versions that are not yanked"))?
                 }
             };
             Constraint::default_for(&version)
@@ -233,13 +360,27 @@ pub fn add(ctx: &Ctx, spec_arg: &str) -> Result<()> {
     // only once that succeeded.
     let old = Lockfile::read(&project.lock_path())?;
     let mut with = loaded.clone();
-    with.root.dependencies.push(Dependency { id: id.to_string(), constraint: constraint.clone(), kind: DepKind::Package });
+    with.root.dependencies.push(Dependency {
+        id: id.to_string(),
+        constraint: constraint.clone(),
+        kind: DepKind::Package,
+    });
     let new_lock = with.resolve(old.as_ref(), Release::None, &registries)?;
     write_manifest(ctx, &project, &new)?;
-    ctx.out.status("Adding", &format!("{id} {c} to {SPEC_FILE}"));
+    ctx.out
+        .status("Adding", &format!("{id} {c} to {SPEC_FILE}"));
     print_changes(ctx, old.as_ref(), &new_lock);
     new_lock.write(&project.lock_path())?;
-    let report = install_with(ctx, &project, &registries, InstallOptions { locked: false, force: false, env: ctx.env })?;
+    let report = install_with(
+        ctx,
+        &project,
+        &registries,
+        InstallOptions {
+            locked: false,
+            force: false,
+            env: ctx.env,
+        },
+    )?;
     print_report(ctx, &report);
     Ok(())
 }
@@ -251,20 +392,41 @@ pub fn remove(ctx: &Ctx, id: &str) -> Result<()> {
     let new = match edit::remove(&src, id) {
         Ok(n) => n,
         Err(e @ EditError::NotPresent(_)) => bail!("{e}"),
-        Err(e) => return Err(manual_edit(ctx, &project, &e, "Remove the s.depends line for", id)),
+        Err(e) => {
+            return Err(manual_edit(
+                ctx,
+                &project,
+                &e,
+                "Remove the s.depends line for",
+                id,
+            ));
+        }
     };
     // As for add: resolve without the dependency first, write afterwards.
     let loaded = load(&project, ctx.env, None)?;
     let registries = registries_for(ctx, &project)?;
     let old = Lockfile::read(&project.lock_path())?;
     let mut without = loaded.clone();
-    without.root.dependencies.retain(|d| !(d.kind != DepKind::File && d.package_id() == Some(id)));
+    without
+        .root
+        .dependencies
+        .retain(|d| !(d.kind != DepKind::File && d.package_id() == Some(id)));
     let new_lock = without.resolve(old.as_ref(), Release::None, &registries)?;
     write_manifest(ctx, &project, &new)?;
-    ctx.out.status("Removing", &format!("{id} from {SPEC_FILE}"));
+    ctx.out
+        .status("Removing", &format!("{id} from {SPEC_FILE}"));
     print_changes(ctx, old.as_ref(), &new_lock);
     new_lock.write(&project.lock_path())?;
-    let report = install_with(ctx, &project, &registries, InstallOptions { locked: false, force: false, env: ctx.env })?;
+    let report = install_with(
+        ctx,
+        &project,
+        &registries,
+        InstallOptions {
+            locked: false,
+            force: false,
+            env: ctx.env,
+        },
+    )?;
     print_report(ctx, &report);
     Ok(())
 }

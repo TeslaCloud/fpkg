@@ -1,0 +1,8 @@
+--- Entry point of the {{title}} schema, run on both realms. It is included before the folders of
+-- the schema, so `factions`, `languages`, `themes` and the other folders load after it, sets
+-- the default theme and includes the hook files.
+
+SCHEMA.default_theme = '{{id}}'
+
+require_relative 'cl_hooks'
+require_relative 'sv_hooks'

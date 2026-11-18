@@ -4,7 +4,10 @@ use super::*;
 use crate::project::Project;
 
 fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/flux-ce").canonicalize().unwrap()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/flux-ce")
+        .canonicalize()
+        .unwrap()
 }
 
 fn eval_src(src: &str) -> Result<Evaluation, SpecError> {
@@ -12,6 +15,7 @@ fn eval_src(src: &str) -> Result<Evaluation, SpecError> {
         source: src.to_string(),
         chunk_name: "packages/t/packagespec.lua".into(),
         project_root: fixture(),
+        package_dir: None,
         package_path: "flux/packages/t/".into(),
         project_id: "flux".into(),
         env: Env::Production,
@@ -31,7 +35,11 @@ fn evaluates_every_flux_ce_spec() {
     assert_eq!(ids.len(), 16);
     assert_eq!(ids[5], "lib/flux.lua");
     assert_eq!(root.dependencies[5].kind, DepKind::File);
-    assert!(check(&root, &project.root_location()).iter().all(|d| d.severity != Severity::Error));
+    assert!(
+        check(&root, &project.root_location())
+            .iter()
+            .all(|d| d.severity != Severity::Error)
+    );
 
     let pkgs = project.packages().unwrap();
     assert_eq!(pkgs.len(), 16);
@@ -40,7 +48,10 @@ fn evaluates_every_flux_ce_spec() {
         let m = load(&loc, Env::Production).unwrap_or_else(|e| panic!("{}: {e}", p.id));
         assert_eq!(m.id, p.id);
         assert!(!m.name.is_empty(), "{}", p.id);
-        let errors: Vec<_> = check(&m, &loc).into_iter().filter(|d| d.severity == Severity::Error).collect();
+        let errors: Vec<_> = check(&m, &loc)
+            .into_iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
         assert!(errors.is_empty(), "{}: {errors:?}", p.id);
         match p.id.as_str() {
             "fontawesome" => {
@@ -52,17 +63,26 @@ fn evaluates_every_flux_ce_spec() {
                         "resource/fonts/fa-solid-900.ttf"
                     ]
                 );
-                assert_eq!(m.cl_files, vec!["lib/cl_fontawesome.lua", "lib/cl_icons.lua"]);
+                assert_eq!(
+                    m.cl_files,
+                    vec!["lib/cl_fontawesome.lua", "lib/cl_icons.lua"]
+                );
                 assert_eq!(m.license.as_deref(), Some("file"));
             }
             "sfs" => {
-                assert_eq!(m.client_env, vec![("SFS_PATH".to_string(), "flux/packages/sfs/".to_string())]);
+                assert_eq!(
+                    m.client_env,
+                    vec![("SFS_PATH".to_string(), "flux/packages/sfs/".to_string())]
+                );
                 assert_eq!(m.name, "Srlion's Fast Serializer");
                 assert_eq!(m.authors, vec!["Srlion"]);
                 assert_eq!(m.files, vec!["lib/install.lua"]);
             }
             "utf8" => {
-                assert_eq!(m.client_env, vec![("UTF8_PATH".to_string(), "flux/packages/utf8/".to_string())]);
+                assert_eq!(
+                    m.client_env,
+                    vec![("UTF8_PATH".to_string(), "flux/packages/utf8/".to_string())]
+                );
                 assert_eq!(m.sv_files, vec!["lib/utf8.lua"]);
                 assert_eq!(m.cl_files, vec!["lib/utf8.min.lua"]);
             }
@@ -89,7 +109,18 @@ fn plural_names_map_like_flux() {
     )
     .unwrap();
     let keys: Vec<_> = ev.fields.keys().map(String::as_str).collect();
-    assert_eq!(keys, vec!["addres", "author", "cl_file", "dependency", "global", "name", "version"]);
+    assert_eq!(
+        keys,
+        vec![
+            "addres",
+            "author",
+            "cl_file",
+            "dependency",
+            "global",
+            "name",
+            "version"
+        ]
+    );
 }
 
 #[test]
@@ -98,7 +129,11 @@ fn depends_forms() {
         "Package:describe(function(s)\n  s.version = '1.0.0'\n  s.depends 'a'\n  s.depends('b', '~> 7.0')\n  s:depends('c')\n  s:depends('d', '>= 1.0')\n  PACKAGE:depends('e')\n  s.depends 'lib/x.lua'\nend)",
     )
     .unwrap();
-    let got: Vec<_> = ev.depends.iter().map(|(n, c)| (n.as_str(), c.as_deref())).collect();
+    let got: Vec<_> = ev
+        .depends
+        .iter()
+        .map(|(n, c)| (n.as_str(), c.as_deref()))
+        .collect();
     assert_eq!(
         got,
         vec![
@@ -124,7 +159,9 @@ fn glua_syntax_and_flags() {
 
 #[test]
 fn unknown_global_names_global_and_line() {
-    let e = eval_src("Package:describe(function(s)\n  s.version = '1.0.0'\n  s.name = Foo.bar\nend)").unwrap_err();
+    let e =
+        eval_src("Package:describe(function(s)\n  s.version = '1.0.0'\n  s.name = Foo.bar\nend)")
+            .unwrap_err();
     let msg = e.to_string();
     assert!(msg.contains("unknown global 'Foo'"), "{msg}");
     assert!(msg.contains(":3:"), "{msg}");
@@ -132,14 +169,28 @@ fn unknown_global_names_global_and_line() {
 
 #[test]
 fn sandbox_has_no_escape_hatches() {
-    for name in ["io", "os", "debug", "ffi", "jit", "loadfile", "dofile", "collectgarbage"] {
+    for name in [
+        "io",
+        "os",
+        "debug",
+        "ffi",
+        "jit",
+        "loadfile",
+        "dofile",
+        "collectgarbage",
+    ] {
         let e = eval_src(&format!("local x = {name}")).unwrap_err();
-        assert!(e.to_string().contains(&format!("unknown global '{name}'")), "{name}: {e}");
+        assert!(
+            e.to_string().contains(&format!("unknown global '{name}'")),
+            "{name}: {e}"
+        );
     }
     let e = eval_src("require('x')").unwrap_err();
     assert!(e.to_string().contains("require is not available"), "{e}");
     let ok = |src: &str| {
-        let r = eval_src(&format!("{src}\nPackage:describe(function(s) s.version='1.0.0' end)"));
+        let r = eval_src(&format!(
+            "{src}\nPackage:describe(function(s) s.version='1.0.0' end)"
+        ));
         assert!(r.is_ok(), "{src}: {r:?}");
     };
     ok("assert(string.dump == nil)");
@@ -151,7 +202,10 @@ fn sandbox_has_no_escape_hatches() {
     ok("load('return 1')(); assert(rawget(_G, 'package') == nil and rawget(_G, 'event') == nil)");
     for name in ["package", "load_nl", "event", "keyed", "raise", "add_path"] {
         let e = eval_src(&format!("local x = {name}")).unwrap_err();
-        assert!(e.to_string().contains(&format!("unknown global '{name}'")), "{name}: {e}");
+        assert!(
+            e.to_string().contains(&format!("unknown global '{name}'")),
+            "{name}: {e}"
+        );
     }
     let e = eval_src("local s = string.rep('x', 2^29)").unwrap_err();
     assert!(e.to_string().contains("larger than 16 MiB"), "{e}");
@@ -161,23 +215,79 @@ fn sandbox_has_no_escape_hatches() {
 fn sandbox_names_are_allow_listed() {
     let names = sandbox_names().unwrap();
     let allowed = [
-        "AddCSLuaFile", "CLIENT", "IS_DEVELOPMENT", "IS_PRODUCTION", "IS_TEST", "PACKAGE", "Package", "SERVER",
-        "String", "_G", "_VERSION", "add_client_env", "assert", "bit", "coroutine", "engine", "error", "file",
-        "getmetatable", "include", "ipairs", "isbool", "isfunction", "isnumber", "isstring", "istable", "load",
-        "loadstring", "math", "next", "pairs", "pcall", "print", "rawequal", "rawget", "rawset", "require",
-        "require_relative", "resource", "select", "setmetatable", "string", "table", "tobool", "tonumber",
-        "tostring", "type", "typeof", "unpack", "xpcall",
+        "AddCSLuaFile",
+        "CLIENT",
+        "IS_DEVELOPMENT",
+        "IS_PRODUCTION",
+        "IS_TEST",
+        "PACKAGE",
+        "Package",
+        "SERVER",
+        "String",
+        "_G",
+        "_VERSION",
+        "add_client_env",
+        "assert",
+        "bit",
+        "coroutine",
+        "engine",
+        "error",
+        "file",
+        "getmetatable",
+        "include",
+        "ipairs",
+        "isbool",
+        "isfunction",
+        "isnumber",
+        "isstring",
+        "istable",
+        "load",
+        "loadstring",
+        "math",
+        "next",
+        "pairs",
+        "pcall",
+        "print",
+        "rawequal",
+        "rawget",
+        "rawset",
+        "require",
+        "require_relative",
+        "resource",
+        "select",
+        "setmetatable",
+        "string",
+        "table",
+        "tobool",
+        "tonumber",
+        "tostring",
+        "type",
+        "typeof",
+        "unpack",
+        "xpcall",
     ];
-    let unexpected: Vec<_> = names.iter().filter(|n| !allowed.contains(&n.as_str())).collect();
-    assert!(unexpected.is_empty(), "names not on the allow-list: {unexpected:?}");
+    let unexpected: Vec<_> = names
+        .iter()
+        .filter(|n| !allowed.contains(&n.as_str()))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "names not on the allow-list: {unexpected:?}"
+    );
 }
 
 #[test]
 fn shared_and_cyclic_tables_are_refused() {
-    let e = eval_src("local t = {}\nt[1] = t\nPackage:describe(function(s) s.version='1.0.0'; s.files = t end)").unwrap_err();
+    let e = eval_src(
+        "local t = {}\nt[1] = t\nPackage:describe(function(s) s.version='1.0.0'; s.files = t end)",
+    )
+    .unwrap_err();
     assert!(e.to_string().contains("appears twice"), "{e}");
     let e = eval_src("local t = {'a'}\nfor i = 1, 30 do t = {t, t} end\nPackage:describe(function(s) s.version='1.0.0'; s.files = t end)").unwrap_err();
-    assert!(e.to_string().contains("appears twice") || e.to_string().contains("deep"), "{e}");
+    assert!(
+        e.to_string().contains("appears twice") || e.to_string().contains("deep"),
+        "{e}"
+    );
     let e = eval_src("local t = {}\nfor i = 1, 200000 do t[i] = i end\nPackage:describe(function(s) s.version='1.0.0'; s.files = t end)").unwrap_err();
     assert!(e.to_string().contains("100000"), "{e}");
 }
@@ -197,7 +307,12 @@ fn file_find_stays_inside_the_project() {
             LuaData::String("16".into())
         ]))
     );
-    assert_eq!(ev.fields.get("file"), Some(&LuaData::List(vec![LuaData::String("packagespec.lua".into())])));
+    assert_eq!(
+        ev.fields.get("file"),
+        Some(&LuaData::List(vec![LuaData::String(
+            "packagespec.lua".into()
+        )]))
+    );
 }
 
 #[test]
@@ -213,7 +328,8 @@ fn instruction_budget_stops_loops() {
 
 #[test]
 fn print_is_recorded() {
-    let ev = eval_src("print('hi', 1)\nPackage:describe(function(s) s.version='1.0.0' end)").unwrap();
+    let ev =
+        eval_src("print('hi', 1)\nPackage:describe(function(s) s.version='1.0.0' end)").unwrap();
     assert_eq!(ev.output, vec!["hi\t1"]);
 }
 
@@ -224,6 +340,7 @@ fn env_flags() {
         source: src.into(),
         chunk_name: "t".into(),
         project_root: fixture(),
+        package_dir: None,
         package_path: "flux/".into(),
         project_id: "flux".into(),
         env: Env::Development,
@@ -236,10 +353,16 @@ fn env_flags() {
 #[test]
 fn manifest_errors() {
     let m = |src: &str| Manifest::from_evaluation("t", "t", eval_src(src).unwrap());
-    assert!(matches!(m("local x = 1"), Err(SpecError::NotDescribed { .. })));
+    assert!(matches!(
+        m("local x = 1"),
+        Err(SpecError::NotDescribed { .. })
+    ));
     assert!(m("Package:describe(function(s) s.name = 'x' end)").is_err());
     assert!(m("Package:describe(function(s) s.version = 'abc' end)").is_err());
-    assert!(m("Package:describe(function(s) s.version = '1.0.0'; s.depends('a', 'bogus') end)").is_err());
+    assert!(
+        m("Package:describe(function(s) s.version = '1.0.0'; s.depends('a', 'bogus') end)")
+            .is_err()
+    );
     let ok = m("Package:describe(function(s) s.version = '1.0.0'; s.serverside = 'yes'; s.date = 'June' end)").unwrap();
     assert_eq!(ok.problems.len(), 2);
 }
@@ -249,7 +372,210 @@ fn licenses() {
     assert!(is_known_license("MIT"));
     assert!(is_known_license("MIT OR Apache-2.0"));
     assert!(is_known_license("(MIT AND BSD-3-Clause)"));
-    assert!(is_known_license("GPL-2.0-only WITH Classpath-exception-2.0"));
+    assert!(is_known_license(
+        "GPL-2.0-only WITH Classpath-exception-2.0"
+    ));
     assert!(!is_known_license("Proprietary"));
     assert!(!is_known_license(""));
+}
+
+/// Evaluates and checks `src` as the spec at `rel` in a temporary project.
+fn checked(files: &[(&str, &str)], rel: &str, is_root: bool) -> (Manifest, Vec<Diagnostic>) {
+    test_in_process();
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().canonicalize().unwrap().join("proj");
+    for (path, text) in files {
+        let p = root.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    let project = Project::new(root.clone());
+    let loc = if is_root {
+        project.root_location()
+    } else {
+        project.package_location(rel)
+    };
+    let m = load(&loc, Env::Production).unwrap();
+    let d = check(&m, &loc);
+    (m, d)
+}
+
+fn errors(d: &[Diagnostic]) -> Vec<String> {
+    d.iter()
+        .filter(|x| x.severity == Severity::Error)
+        .map(|x| x.message.clone())
+        .collect()
+}
+
+fn warnings(d: &[Diagnostic]) -> Vec<String> {
+    d.iter()
+        .filter(|x| x.severity == Severity::Warning)
+        .map(|x| x.message.clone())
+        .collect()
+}
+
+const BASE: &str = "  s.name = 'T'\n  s.version = '1.0.0'\n  s.license = 'MIT'\n";
+
+#[test]
+fn id_field_rules() {
+    let spec = |extra: &str| format!("Package:describe(function(s)\n{BASE}{extra}end)\n");
+    let (m, d) = checked(
+        &[
+            ("packagespec.lua", &spec("")),
+            (
+                "packages/cable/packagespec.lua",
+                &spec("  s.id = 'cable'\n"),
+            ),
+        ],
+        "cable",
+        false,
+    );
+    assert_eq!(m.declared_id.as_deref(), Some("cable"));
+    assert!(errors(&d).is_empty(), "{d:?}");
+    let (_, d) = checked(
+        &[
+            ("packagespec.lua", &spec("")),
+            (
+                "packages/cable/packagespec.lua",
+                &spec("  s.id = 'other'\n"),
+            ),
+        ],
+        "cable",
+        false,
+    );
+    assert!(
+        errors(&d)
+            .iter()
+            .any(|e| e.contains("s.id 'other' does not match the directory name 'cable'")),
+        "{d:?}"
+    );
+    // A root without a gamemode txt: the id is s.id, which must read the same
+    // from the text as it evaluates.
+    let (m, d) = checked(&[("packagespec.lua", &spec("  s.id = 'flux'\n"))], "", true);
+    assert_eq!(m.id, "flux");
+    assert!(errors(&d).is_empty(), "{d:?}");
+    let (_, d) = checked(
+        &[(
+            "packagespec.lua",
+            &spec("  local id = 'flux'\n  s.id = id\n"),
+        )],
+        "",
+        true,
+    );
+    assert!(errors(&d).iter().any(|e| e.contains("plain s.id")), "{d:?}");
+    let (_, d) = checked(&[("packagespec.lua", &spec("  s.id = 'Flux'\n"))], "", true);
+    assert!(
+        errors(&d)
+            .iter()
+            .any(|e| e.contains("not a valid package id")),
+        "{d:?}"
+    );
+    // A gamemode project: the txt decides, and s.id must agree with it.
+    let (m, d) = checked(
+        &[
+            ("packagespec.lua", &spec("  s.id = 'other'\n")),
+            ("hl2rp.txt", "\"hl2rp\"\n{\n}\n"),
+        ],
+        "",
+        true,
+    );
+    assert_eq!(m.id, "hl2rp");
+    assert!(
+        errors(&d)
+            .iter()
+            .any(|e| e.contains("does not match the gamemode name 'hl2rp'")),
+        "{d:?}"
+    );
+}
+
+#[test]
+fn binaries_field_rules() {
+    let spec = |extra: &str| format!("Package:describe(function(s)\n{BASE}{extra}end)\n");
+    let (m, d) = checked(&[("packagespec.lua", &spec(""))], "", true);
+    assert_eq!((m.binaries.as_deref(), m.binaries_dir()), (None, "bin"));
+    assert!(
+        warnings(&d).is_empty(),
+        "the default folder may be missing: {d:?}"
+    );
+    let (m, d) = checked(
+        &[
+            ("packagespec.lua", &spec("  s.binaries = 'out/bin'\n")),
+            ("out/bin/gmsv_x_linux64.dll", "x"),
+            ("out/bin/README", "x"),
+        ],
+        "",
+        true,
+    );
+    assert_eq!(m.binaries.as_deref(), Some("out/bin"));
+    assert!(d.iter().all(|x| !x.message.contains("binaries")), "{d:?}");
+    assert_eq!(
+        binary_modules(Path::new("/nonexistent"), "bin"),
+        Vec::<String>::new()
+    );
+    for bad in ["/abs", "../up", "a/../b"] {
+        let (_, d) = checked(
+            &[(
+                "packagespec.lua",
+                &spec(&format!("  s.binaries = '{bad}'\n")),
+            )],
+            "",
+            true,
+        );
+        assert!(
+            errors(&d)
+                .iter()
+                .any(|e| e.contains("is not a folder path")),
+            "{bad}: {d:?}"
+        );
+    }
+    let (_, d) = checked(
+        &[
+            ("packagespec.lua", &spec("  s.binaries = 'x.dll'\n")),
+            ("x.dll", "x"),
+        ],
+        "",
+        true,
+    );
+    assert!(
+        errors(&d).iter().any(|e| e.contains("names a file")),
+        "{d:?}"
+    );
+    let (_, d) = checked(
+        &[("packagespec.lua", &spec("  s.binaries = { 'bin' }\n"))],
+        "",
+        true,
+    );
+    assert!(
+        errors(&d)
+            .iter()
+            .any(|e| e.contains("s.binary must be a string")),
+        "{d:?}"
+    );
+    let (_, d) = checked(
+        &[("packagespec.lua", &spec("  s.binaries = 'bin'\n"))],
+        "",
+        true,
+    );
+    assert!(
+        warnings(&d)
+            .iter()
+            .any(|w| w.contains("does not exist; build the binaries first")),
+        "{d:?}"
+    );
+    let (_, d) = checked(
+        &[
+            ("packagespec.lua", &spec("  s.binaries = 'bin'\n")),
+            ("bin/LICENSES.txt", "x"),
+        ],
+        "",
+        true,
+    );
+    assert!(
+        warnings(&d).iter().any(|w| w.contains("has no .dll files")),
+        "{d:?}"
+    );
+    assert!(
+        d.iter().all(|x| !x.message.contains("unknown field")),
+        "{d:?}"
+    );
 }

@@ -1,0 +1,9 @@
+--- Main file of the {{title}} plugin, run on both realms after the folders of the plugin. The
+-- plugin greets every player with a notification once their game has loaded, unless the
+-- `{{id}}_greeting` config is off, and writes to the server log which players have finished
+-- loading.
+
+PLUGIN:set_global('{{global}}')
+
+require_relative 'cl_hooks'
+require_relative 'sv_hooks'

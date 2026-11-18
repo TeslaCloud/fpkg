@@ -1,4 +1,4 @@
-//! Output: colours, messages on stderr, JSON on stdout.
+//! Output: colors, messages on stderr, JSON on stdout.
 
 use std::io::IsTerminal;
 
@@ -30,9 +30,16 @@ impl Out {
         let color = match choice {
             ColorChoice::Always => true,
             ColorChoice::Never => false,
-            ColorChoice::Auto => std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal(),
+            ColorChoice::Auto => {
+                std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+            }
         };
-        Out { color, quiet, verbose, json }
+        Out {
+            color,
+            quiet,
+            verbose,
+            json,
+        }
     }
 
     pub fn paint(&self, style: Style, s: &str) -> String {

@@ -1,0 +1,10 @@
+--- Server-side hooks of the schema. Hooks are handled by gamemode-like functions on the
+-- SCHEMA table instead of hook.Add.
+
+--- Tells a player which character they are playing once the character has been loaded and
+-- applied to them.
+-- @param owner [Player the player whose character has been loaded]
+-- @param character [Character the character that has been loaded]
+function SCHEMA:PostLoadCharacter(owner, character)
+  owner:notify('{{id}}.notification.character_loaded', { name = character.name })
+end

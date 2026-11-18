@@ -74,7 +74,9 @@ where
 }
 
 /// Owners as logins, or as objects with a `login`.
-fn owner_logins<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+fn owner_logins<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<String>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Owner {
@@ -97,7 +99,9 @@ fn de_id<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, 
     let s = String::deserialize(d)?;
     match PackageId::problem(&s) {
         None => Ok(s),
-        Some(reason) => Err(serde::de::Error::custom(format!("invalid package id '{s}': {reason}"))),
+        Some(reason) => Err(serde::de::Error::custom(format!(
+            "invalid package id '{s}': {reason}"
+        ))),
     }
 }
 
@@ -108,7 +112,9 @@ fn de_version<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Str
     Ok(s)
 }
 
-fn de_opt_version<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<String>, D::Error> {
+fn de_opt_version<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
     let s = Option::<String>::deserialize(d)?;
     if let Some(v) = &s {
         Version::parse(v).map_err(serde::de::Error::custom)?;
@@ -117,7 +123,9 @@ fn de_opt_version<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result
 }
 
 /// The versions map of a package document: every key a version.
-fn de_versions<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<BTreeMap<String, VersionMeta>, D::Error> {
+fn de_versions<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<BTreeMap<String, VersionMeta>, D::Error> {
     let m = Option::<BTreeMap<String, VersionMeta>>::deserialize(d)?.unwrap_or_default();
     for k in m.keys() {
         Version::parse(k).map_err(serde::de::Error::custom)?;
@@ -204,7 +212,10 @@ impl VersionMeta {
                 .dependencies
                 .iter()
                 .filter(|d| d.kind == DepKind::Package)
-                .map(|d| DepMeta { id: d.id.clone(), constraint: d.constraint.to_string() })
+                .map(|d| DepMeta {
+                    id: d.id.clone(),
+                    constraint: d.constraint.to_string(),
+                })
                 .collect(),
             dist: None,
             docs: None,
@@ -216,7 +227,8 @@ impl VersionMeta {
     }
 
     pub fn parsed_version(&self) -> Result<Version> {
-        Version::parse(&self.version).map_err(|e| RegistryError::Invalid(format!("{}: {e}", self.id)))
+        Version::parse(&self.version)
+            .map_err(|e| RegistryError::Invalid(format!("{}: {e}", self.id)))
     }
 
     pub fn package_id(&self) -> Result<PackageId> {
@@ -226,7 +238,14 @@ impl VersionMeta {
     /// The metadata as sent in a publish request: without the fields the
     /// server sets.
     pub fn for_publish(&self) -> VersionMeta {
-        VersionMeta { dist: None, docs: None, yanked: false, published_at: None, published_by: None, ..self.clone() }
+        VersionMeta {
+            dist: None,
+            docs: None,
+            yanked: false,
+            published_at: None,
+            published_by: None,
+            ..self.clone()
+        }
     }
 }
 
@@ -272,13 +291,20 @@ impl PackageDoc {
 
     /// The metadata of `v`, if the document has a consistent entry for it.
     pub fn get(&self, v: &Version) -> Option<&VersionMeta> {
-        self.versions.iter().find(|(k, m)| self.consistent(k, m).as_ref() == Some(v)).map(|(_, m)| m)
+        self.versions
+            .iter()
+            .find(|(k, m)| self.consistent(k, m).as_ref() == Some(v))
+            .map(|(_, m)| m)
     }
 
     /// The newest non-yanked version, computed (rather than trusting `latest`).
     pub fn newest(&self) -> Option<Version> {
         let all = self.sorted_versions();
-        let pick = |pre: bool| all.iter().find(|(v, m)| !m.yanked && (pre || !v.is_prerelease())).map(|(v, _)| v.clone());
+        let pick = |pre: bool| {
+            all.iter()
+                .find(|(v, m)| !m.yanked && (pre || !v.is_prerelease()))
+                .map(|(v, _)| v.clone())
+        };
         pick(false).or_else(|| pick(true))
     }
 }
@@ -434,7 +460,11 @@ pub enum RegistryError {
     #[error("offline: {0} is not in the cache")]
     Offline(String),
     #[error("checksum mismatch for {what}: expected sha256 {expected}, got {actual}")]
-    Checksum { what: String, expected: String, actual: String },
+    Checksum {
+        what: String,
+        expected: String,
+        actual: String,
+    },
     #[error(
         "refusing to talk to {0} over plain http: use https (http is allowed only for localhost and 127.0.0.1)"
     )]
@@ -442,7 +472,10 @@ pub enum RegistryError {
     #[error("{0}")]
     Invalid(String),
     #[error("{path}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl RegistryError {
@@ -480,7 +513,10 @@ impl RegistryError {
         self.kind() == Some(ApiErrorKind::NotFound)
     }
     pub(crate) fn io(path: &std::path::Path, source: std::io::Error) -> Self {
-        RegistryError::Io { path: path.to_path_buf(), source }
+        RegistryError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
     }
 }
 
@@ -489,7 +525,10 @@ impl RegistryError {
 pub enum Conditional {
     /// `304`: the cached document is current.
     NotModified,
-    Modified { doc: PackageDoc, etag: Option<String> },
+    Modified {
+        doc: PackageDoc,
+        etag: Option<String>,
+    },
     NotFound,
 }
 
@@ -567,7 +606,10 @@ pub struct NetOptions {
 
 impl Default for NetOptions {
     fn default() -> Self {
-        NetOptions { retries: 3, timeout: Duration::from_secs(30) }
+        NetOptions {
+            retries: 3,
+            timeout: Duration::from_secs(30),
+        }
     }
 }
 
@@ -578,25 +620,34 @@ pub fn open(url: &str, net: &NetOptions) -> Result<Box<dyn Registry>> {
     } else if url.starts_with("http://") || url.starts_with("https://") {
         Ok(Box::new(HttpRegistry::new(url, net)?))
     } else {
-        Err(RegistryError::Invalid(format!("unsupported registry URL '{url}' (https://, http://localhost or file://)")))
+        Err(RegistryError::Invalid(format!(
+            "unsupported registry URL '{url}' (https://, http://localhost or file://)"
+        )))
     }
 }
 
-/// The registry's normalised URL (trailing slash), as lockfiles record it.
+/// The registry's normalized URL (trailing slash), as lockfiles record it.
 pub fn normalize_url(url: &str) -> Result<String> {
     if url.starts_with("file:") {
         return Ok(FileRegistry::from_url(url)?.url().to_string());
     }
-    let u = url::Url::parse(url).map_err(|e| RegistryError::Invalid(format!("invalid registry URL '{url}': {e}")))?;
+    let u = url::Url::parse(url)
+        .map_err(|e| RegistryError::Invalid(format!("invalid registry URL '{url}': {e}")))?;
     Ok(HttpRegistry::root_of(&u).to_string())
 }
 
 /// The browser URL of a package on a registry (`https://fluxpkg.dev/packages/<id>`).
 pub fn package_page(registry_url: &str, id: &str) -> String {
     if registry_url.starts_with("file:") {
-        format!("{}packages/{id}.json", crate::lockfile::normalize_registry(registry_url))
+        format!(
+            "{}packages/{id}.json",
+            crate::lockfile::normalize_registry(registry_url)
+        )
     } else {
-        format!("{}packages/{id}", crate::lockfile::normalize_registry(registry_url))
+        format!(
+            "{}packages/{id}",
+            crate::lockfile::normalize_registry(registry_url)
+        )
     }
 }
 
@@ -636,7 +687,12 @@ pub struct Registries {
 pub type SharedRegistry = std::rc::Rc<CachedRegistry<Box<dyn Registry>>>;
 
 impl Registries {
-    pub fn new(default_url: &str, cache_root: PathBuf, net: NetOptions, offline: bool) -> Result<Registries> {
+    pub fn new(
+        default_url: &str,
+        cache_root: PathBuf,
+        net: NetOptions,
+        offline: bool,
+    ) -> Result<Registries> {
         Ok(Registries {
             cache_root,
             net,
@@ -682,7 +738,12 @@ impl Registries {
             return Ok(r.clone());
         }
         let inner = open(&url, &self.net)?;
-        let r = std::rc::Rc::new(CachedRegistry::new(inner, &self.cache_root, &url, self.offline));
+        let r = std::rc::Rc::new(CachedRegistry::new(
+            inner,
+            &self.cache_root,
+            &url,
+            self.offline,
+        ));
         self.opened.borrow_mut().insert(url, r.clone());
         Ok(r)
     }
@@ -733,7 +794,8 @@ mod tests {
 
     #[test]
     fn hostile_ids_and_versions_are_refused_when_read() {
-        let meta = |id: &str, v: &str| format!(r#"{{ "id": "{id}", "name": "X", "version": "{v}" }}"#);
+        let meta =
+            |id: &str, v: &str| format!(r#"{{ "id": "{id}", "name": "X", "version": "{v}" }}"#);
         assert!(serde_json::from_str::<VersionMeta>(&meta("../../../escape_id", "1.0.0")).is_err());
         assert!(serde_json::from_str::<VersionMeta>(&meta("ok", "../1.0.0")).is_err());
         assert!(serde_json::from_str::<VersionMeta>(&meta("ok", "1.0.0/../../x")).is_err());
@@ -741,9 +803,18 @@ mod tests {
         let doc = |id: &str, key: &str, inner: &str| {
             format!(r#"{{ "id": "{id}", "versions": {{ "{key}": {inner} }} }}"#)
         };
-        assert!(serde_json::from_str::<PackageDoc>(&doc("../x", "1.0.0", &meta("x", "1.0.0"))).is_err());
-        assert!(serde_json::from_str::<PackageDoc>(&doc("x", "../../1", &meta("x", "1.0.0"))).is_err());
-        assert!(serde_json::from_str::<PackageDoc>(r#"{ "id": "x", "versions": {}, "latest": "../x" }"#).is_err());
+        assert!(
+            serde_json::from_str::<PackageDoc>(&doc("../x", "1.0.0", &meta("x", "1.0.0"))).is_err()
+        );
+        assert!(
+            serde_json::from_str::<PackageDoc>(&doc("x", "../../1", &meta("x", "1.0.0"))).is_err()
+        );
+        assert!(
+            serde_json::from_str::<PackageDoc>(
+                r#"{ "id": "x", "versions": {}, "latest": "../x" }"#
+            )
+            .is_err()
+        );
         let dep = r#"{ "id": "x", "name": "X", "version": "1.0.0", "dependencies": [ { "id": "../y", "constraint": "*" } ] }"#;
         assert!(serde_json::from_str::<VersionMeta>(dep).is_err());
         // An entry that names another package, or another version, is not served.
@@ -758,8 +829,14 @@ mod tests {
 
     #[test]
     fn docs_urls() {
-        assert_eq!(docs_url("https://fluxpkg.dev/", "cable", "1.0.0").unwrap(), "https://docs.fluxpkg.dev/cable/1.0.0/");
+        assert_eq!(
+            docs_url("https://fluxpkg.dev/", "cable", "1.0.0").unwrap(),
+            "https://docs.fluxpkg.dev/cable/1.0.0/"
+        );
         assert_eq!(docs_url("file:///tmp/r/", "cable", "1.0.0"), None);
-        assert_eq!(package_page("https://fluxpkg.dev", "cable"), "https://fluxpkg.dev/packages/cable");
+        assert_eq!(
+            package_page("https://fluxpkg.dev", "cable"),
+            "https://fluxpkg.dev/packages/cable"
+        );
     }
 }

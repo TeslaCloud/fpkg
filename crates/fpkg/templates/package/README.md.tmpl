@@ -1,0 +1,29 @@
+# {{title}}
+
+A package for the Flux framework. Flux runs `lib/sh_{{id}}.lua` on the server and the clients
+of every project that depends on `{{id}}`, with `{{global}}` as the global of the package.
+
+## Development
+
+To work on the package from a schema, link this checkout into the schema, declare the
+dependency and install:
+
+```sh
+cd <path to the schema>
+fpkg link <path to this checkout>
+fpkg add {{id}}
+```
+
+`fpkg add` writes `s.depends('{{id}}', ...)` into the schema's `packagespec.lua`, locks and
+installs. Changes to this checkout are then live in the schema.
+
+Validate the specification and see what a release contains:
+
+```sh
+fpkg check
+fpkg pack --list
+```
+
+## Publishing
+
+Raise `s.version`, log in once with `fpkg login`, then run `fpkg publish`.

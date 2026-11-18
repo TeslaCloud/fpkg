@@ -1,0 +1,27 @@
+# {{title}}
+
+A schema for the Flux framework.
+
+{{docker_readme}}## Running it on a server without Docker
+
+Put this repository into `garrysmod/gamemodes` of the server, in a folder named `{{id}}`, run
+`fpkg install` anywhere in the server folder to install Flux and the other packages of the schema
+into its `packages` folder, and start the server with `+gamemode {{id}}`. The configuration of the
+server goes into `gamemodes/{{id}}/config/`.
+
+Binary modules: `gmsv_file` is installed as a dependency of `flux`. A PostgreSQL server
+uncomments `s.depends 'gmsv_pg'` in `packagespec.lua` and runs `fpkg install`. MySQL and MariaDB
+need mysqloo, which you copy into `garrysmod/lua/bin` by hand from
+https://github.com/TeslaCloud/flux-dependencies.
+
+Please refer to the Flux repository for the rest of the installation instructions.
+
+## Development
+
+Run `fpkg link <path to a flux-ce checkout>` in this checkout to use a checkout of Flux instead of
+the published package, then `fpkg install` for the rest of the packages.
+
+The schema itself lives in `schema/`, and `{{id}}.yml` picks the plugins of Flux it loads and
+sets config values. `fpkg new plugin <name>` adds a plugin to `plugins/`, which loads with the
+schema, and `fpkg new package <name>` adds a package to `packages/`, which loads once
+`packagespec.lua` depends on it.

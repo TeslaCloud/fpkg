@@ -1,0 +1,6 @@
+--- Client part of the {{title}} addon, included after the shared part. Writes to the client
+-- console once the local player exists.
+
+hook.Add('InitPostEntity', '{{id}}', function()
+  {{global}}.log('Loaded on the client.')
+end)
