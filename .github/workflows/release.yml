@@ -1,0 +1,171 @@
+# By hand: run CI, build fpkg for Linux (amd64 and arm64, statically linked) and Windows (x64),
+# and draft the GitHub release vX.Y.Z of the version in Cargo.toml with the archives and their
+# SHA256SUMS attached. Running it again replaces a draft; a published release is never touched.
+# Publishing the draft creates the tag, for which image.yml publishes the image X.Y.Z.
+name: Release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the version, which must not be released yet
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^$/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          [ -n "$version" ] || { echo "::error::no version in Cargo.toml"; exit 1; }
+          if [ "$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+            echo "::error::v$version is released already; raise the version in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: [version]
+    uses: ./.github/workflows/ci.yml
+
+  # The binary of the image (the Dockerfile's `binary` stage), built on a runner of each
+  # architecture.
+  linux:
+    name: linux (${{ matrix.arch }})
+    needs: [version, ci]
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    env:
+      NAME: fpkg-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
+    outputs:
+      # The SHA-256 of a fixture's archive as packed on Linux, for `windows-test`.
+      tween: ${{ steps.pack.outputs.tween_x86_64 }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: fpkg }
+      - uses: actions/checkout@v7
+        with: { repository: nl-lang/nl, path: nl, submodules: recursive }
+      - name: Prepare the nl LuaJIT fork
+        working-directory: fpkg
+        run: scripts/prepare-nl.sh
+      - name: Build
+        run: |
+          docker buildx create --use
+          docker buildx build fpkg --build-context nl=nl --target binary --output "type=local,dest=$NAME"
+      - name: Pack
+        id: pack
+        run: |
+          cp fpkg/LICENSE fpkg/README.md "$NAME/"
+          chmod 755 "$NAME/fpkg"
+          "$NAME/fpkg" --version
+          tar -czf "$NAME.tar.gz" --owner=0 --group=0 "$NAME"
+          sha256=$("$NAME/fpkg" --project fpkg/tests/fixtures/flux-ce pack tween -o "$RUNNER_TEMP/packed" | sed -n 's/^sha256 //p')
+          [ -n "$sha256" ]
+          echo "tween_${{ matrix.arch }}=$sha256" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.tar.gz
+          if-no-files-found: error
+
+  # Cross-compiled on Linux with MinGW-w64 (scripts/build-windows.sh).
+  windows:
+    name: windows (x86_64)
+    needs: [version, ci]
+    runs-on: ubuntu-24.04
+    env:
+      NAME: fpkg-${{ needs.version.outputs.version }}-windows-x86_64
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: fpkg }
+      - uses: actions/checkout@v7
+        with: { repository: nl-lang/nl, path: nl, submodules: recursive }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: x86_64-pc-windows-gnu }
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - name: Prepare the nl LuaJIT fork
+        working-directory: fpkg
+        run: scripts/prepare-nl.sh
+      - name: Build
+        working-directory: fpkg
+        run: scripts/build-windows.sh
+      - name: Pack
+        run: |
+          mkdir "$NAME"
+          cp fpkg/target/x86_64-pc-windows-gnu/release/fpkg.exe fpkg/LICENSE fpkg/README.md "$NAME/"
+          zip -r "$NAME.zip" "$NAME"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.NAME }}.zip
+          if-no-files-found: error
+
+  # The cross-compiled binary on Windows itself: it starts, evaluates the specs of the fixture
+  # in its child processes and packs an archive that is byte for byte the one packed on Linux.
+  windows-test:
+    name: windows (test)
+    needs: [version, linux, windows]
+    runs-on: windows-latest
+    env:
+      NAME: fpkg-${{ needs.version.outputs.version }}-windows-x86_64
+      TWEEN: ${{ needs.linux.outputs.tween }}
+    steps:
+      # The fixture as it is in the repository, not with CRLF line ends.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with: { name: "${{ env.NAME }}" }
+      - name: Run fpkg.exe
+        shell: bash
+        run: |
+          unzip -q "$NAME.zip"
+          fpkg="$PWD/$NAME/fpkg.exe"
+          "$fpkg" --version
+          "$fpkg" --project tests/fixtures/flux-ce check
+          sha256=$("$fpkg" --project tests/fixtures/flux-ce pack tween | tr -d '\r' | sed -n 's/^sha256 //p')
+          echo "tween: $sha256 here, $TWEEN on Linux"
+          [ -n "$sha256" ] && [ "$sha256" = "$TWEEN" ]
+
+  draft:
+    name: draft the release
+    needs: [version, linux, windows-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { path: dist, merge-multiple: true }
+      - name: Draft v${{ needs.version.outputs.version }}
+        working-directory: dist
+        run: |
+          sha256sum fpkg-* > SHA256SUMS
+          cat SHA256SUMS
+          tag="v$VERSION"
+          case "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" in
+            true) gh release delete "$tag" --yes ;;
+            false) echo "::error::$tag was released in the meantime"; exit 1 ;;
+          esac
+          set -- --draft --title "fpkg $VERSION" --target "$GITHUB_SHA" --generate-notes
+          case "$VERSION" in *-*) set -- "$@" --prerelease ;; esac
+          gh release create "$tag" "$@" fpkg-* SHA256SUMS
+          echo "drafted $(gh release view "$tag" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

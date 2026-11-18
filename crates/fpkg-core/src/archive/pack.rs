@@ -361,7 +361,10 @@ pub fn pack(dir: &Path, id: &str, opts: &PackOptions) -> Result<Packed, ArchiveE
                 .compression_level(Some(opts.level))
         }
         .last_modified_time(time)
-        .unix_permissions(0o644);
+        .unix_permissions(0o644)
+        // The zip crate would say DOS on Windows: the archive has to come
+        // out the same wherever it is packed.
+        .system(zip::System::Unix);
         zw.start_file(path.as_str(), options)?;
         zw.write_all(&data)
             .map_err(|e| ArchiveError::io(&f.abs, e))?;

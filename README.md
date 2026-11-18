@@ -62,6 +62,34 @@ scripts/prepare-nl.sh
 docker buildx build --build-context nl=../nl -t fpkg .
 ```
 
+### Releases
+
+The `Release` workflow (`.github/workflows/release.yml`) is run by hand, from the Actions
+page or with `gh workflow run release.yml`. It runs CI, builds the binaries and drafts the
+GitHub release `vX.Y.Z` of the version in `Cargo.toml` with these files:
+
+| File | What it is |
+| --- | --- |
+| `fpkg-X.Y.Z-linux-x86_64.tar.gz`, `fpkg-X.Y.Z-linux-aarch64.tar.gz` | The binary of the image, statically linked: it runs on any Linux |
+| `fpkg-X.Y.Z-windows-x86_64.zip` | `fpkg.exe` for 64-bit Windows, which needs no DLLs but the system's |
+| `SHA256SUMS` | The SHA-256 of each archive |
+
+Running it again replaces the draft; a published release is never touched, so raise the
+version first. Publishing the draft creates the tag `vX.Y.Z`, for which the image `X.Y.Z` is
+published.
+
+The Windows binary is cross-compiled on Linux with MinGW-w64 (`gcc-mingw-w64-x86-64` on
+Debian and Ubuntu, and `rustup target add x86_64-pc-windows-gnu`):
+
+```sh
+scripts/prepare-nl.sh
+scripts/build-windows.sh         # target/x86_64-pc-windows-gnu/release/fpkg.exe
+```
+
+The workflow then runs it on Windows, where it has to pack the archive of a fixture byte for
+byte as the Linux binary does. On Windows the spec evaluator has its instruction, wall clock
+and output budgets, but not the process limits on CPU time and memory that Unix has.
+
 ## Using it
 
 A project is a directory with a root `packagespec.lua`, the project manifest, whose

@@ -7,7 +7,7 @@
 #
 #   scripts/prepare-nl.sh
 #   docker buildx build --build-context nl=../nl -t fpkg .
-FROM rust:1-alpine AS build
+FROM rust:1.100-alpine3.24 AS build
 RUN apk add --no-cache gcc make musl-dev
 
 # The layout the manifests expect: fpkg and nl side by side. Of nl, the build
@@ -30,7 +30,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # The binary evaluates specs on this architecture and libc.
 RUN fpkg --version && fpkg --project tests/fixtures/flux-ce check --quiet
 
-FROM alpine:3
+# The binary alone, for the release archives:
+#   docker buildx build --build-context nl=../nl --target binary --output <dir> .
+FROM scratch AS binary
+COPY --from=build /usr/local/bin/fpkg /fpkg
+
+FROM alpine:3.24
 LABEL org.opencontainers.image.title="fpkg" \
       org.opencontainers.image.description="fpkg, the package manager for Flux packages" \
       org.opencontainers.image.source="https://github.com/TeslaCloud/fpkg" \
