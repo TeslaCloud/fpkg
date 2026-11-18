@@ -18,9 +18,9 @@ jobs:
     name: cargo test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { path: fpkg }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { repository: nl-lang/nl, path: nl, submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt }
@@ -43,15 +43,15 @@ jobs:
       run:
         working-directory: fpkg/server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { path: fpkg }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { repository: Meow/fdoc, path: fdoc }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: fdoc }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -67,17 +67,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: [rust, server]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { path: fpkg }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { repository: nl-lang/nl, path: nl, submodules: recursive }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { repository: Meow/fdoc, path: fdoc }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "fpkg\nfdoc" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

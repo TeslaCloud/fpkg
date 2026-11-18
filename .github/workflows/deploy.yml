@@ -37,18 +37,18 @@ jobs:
       run:
         working-directory: fpkg/server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: fpkg
           # The commit CI tested.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { repository: Meow/fdoc, path: fdoc }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: fdoc }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

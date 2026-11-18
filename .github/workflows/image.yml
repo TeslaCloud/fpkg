@@ -55,9 +55,9 @@ jobs:
       digest_amd64: ${{ steps.build.outputs.digest_amd64 }}
       digest_arm64: ${{ steps.build.outputs.digest_arm64 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { path: fpkg, ref: "${{ env.SHA }}" }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { repository: nl-lang/nl, path: nl, submodules: recursive }
       - name: The tag is the version in Cargo.toml
         if: startsWith(github.ref, 'refs/tags/v')
