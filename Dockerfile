@@ -20,6 +20,9 @@ COPY --from=nl runtime /src/nl/runtime
 WORKDIR /src/fpkg
 COPY . .
 
+# On arm64, LuaJIT flushes the instruction cache with __clear_cache, which is in
+# libgcc; a static musl link does not pull that in by itself.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C link-arg=-lgcc"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/fpkg/target \
     CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked -p fpkg && \
