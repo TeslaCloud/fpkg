@@ -1,4 +1,4 @@
-# cargo test, the server's tests, and the conformance suite against `wrangler dev`.
+# cargo fmt and cargo test, the server's tests, and the conformance suite against `wrangler dev`.
 # fpkg, nl-lang/nl (fpkg-core depends on ../nl) and Meow/fdoc are checked out side by side.
 name: CI
 
@@ -23,11 +23,15 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: nl-lang/nl, path: nl, submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt }
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: fpkg }
       - name: Prepare the nl LuaJIT fork
         working-directory: fpkg
         run: scripts/prepare-nl.sh
+      - name: cargo fmt
+        working-directory: fpkg
+        run: cargo fmt --check
       - name: cargo test
         working-directory: fpkg
         run: cargo test --workspace

@@ -1,0 +1,123 @@
+# After CI passes on master (or, running CI first, for a v* tag or by hand): build the image of
+# the fpkg binary (the Dockerfile at the root) for amd64 and arm64, each on a runner of its own
+# architecture, and publish the two as ghcr.io/teslacloud/fpkg. Tags: `sha-<commit>` always,
+# `latest` from master, `X.Y.Z` and `X.Y` from the tag vX.Y.Z (a pre-release only its own).
+name: Image
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/teslacloud/fpkg
+  # The commit CI tested.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  ci:
+    if: github.event_name != 'workflow_run'
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: build (${{ matrix.arch }})
+    needs: [ci]
+    # `ci` is skipped for workflow_run (CI already passed to get here). A pull request from a
+    # fork's `master` passes the branch filter above too, and must not publish.
+    if: >-
+      !cancelled() && (
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event != 'pull_request') ||
+        (github.event_name != 'workflow_run' && needs.ci.result == 'success')
+      )
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # Each job of the matrix sets its own.
+      digest_amd64: ${{ steps.build.outputs.digest_amd64 }}
+      digest_arm64: ${{ steps.build.outputs.digest_arm64 }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: fpkg, ref: "${{ env.SHA }}" }
+      - uses: actions/checkout@v4
+        with: { repository: nl-lang/nl, path: nl, submodules: recursive }
+      - name: The tag is the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: fpkg
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^$/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, but Cargo.toml has the version $version"
+            exit 1
+          fi
+      - name: Prepare the nl LuaJIT fork
+        working-directory: fpkg
+        run: scripts/prepare-nl.sh
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      # Pushed without a tag: the `publish` job joins the two architectures under the tags.
+      - name: Build and push by digest
+        id: build
+        run: |
+          docker buildx create --use
+          docker buildx build fpkg \
+            --build-context nl=nl \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --provenance=false \
+            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json
+          digest=$(jq -er '.["containerimage.digest"]' metadata.json)
+          echo "digest_${{ matrix.arch }}=$digest" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: publish
+    needs: [build]
+    # `!cancelled()`: the skipped `ci` would skip this job as well.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Tag the image of both architectures
+        env:
+          AMD64: ${{ needs.build.outputs.digest_amd64 }}
+          ARM64: ${{ needs.build.outputs.digest_arm64 }}
+        run: |
+          tags="sha-$(printf %.7s "$SHA")"
+          case "$GITHUB_REF" in
+            refs/heads/master) tags="$tags latest" ;;
+            refs/tags/v*)
+              version=${GITHUB_REF_NAME#v}
+              tags="$tags $version"
+              case "$version" in *-*) ;; *) tags="$tags ${version%.*}" ;; esac ;;
+          esac
+          set --
+          for tag in $tags; do set -- "$@" --tag "$IMAGE:$tag"; done
+          docker buildx imagetools create "$@" \
+            --annotation "index:org.opencontainers.image.description=fpkg, the package manager for Flux packages" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/TeslaCloud/fpkg" \
+            --annotation "index:org.opencontainers.image.revision=$SHA" \
+            "$IMAGE@$AMD64" "$IMAGE@$ARM64"
+          echo "published $IMAGE with the tags: $tags" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run the published image
+        run: docker run --rm "$IMAGE:sha-$(printf %.7s "$SHA")" --version
