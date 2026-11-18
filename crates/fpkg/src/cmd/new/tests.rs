@@ -612,7 +612,7 @@ fn dockerfile_shares_the_server_layers() {
         .iter()
         .position(|l| l.starts_with("COPY --from=lua_shared"))
         .unwrap();
-    assert_eq!(instructions[0], "FROM alpine/git AS deps");
+    assert_eq!(instructions[0], "FROM alpine/git:2.54.1 AS deps");
     assert_eq!(
         instructions[end],
         "COPY --from=lua_shared --chown=steam:steam --chmod=755 /lua_shared/ bin/linux64/"
