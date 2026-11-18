@@ -19,6 +19,12 @@ const PAGE = 50;
 
 // --- Access ---------------------------------------------------------------
 
+class Redirect extends Error {
+  constructor(public readonly location: string) {
+    super("redirect");
+  }
+}
+
 /** The visitor as an admin; anonymous visitors are sent to log in, others get a 403. */
 async function requireAdmin(c: C): Promise<Visitor> {
   const v = await visitor(c);
@@ -36,12 +42,6 @@ async function adminPost(c: C): Promise<{ v: Visitor; form: FormData }> {
   const { v, form } = await requirePost(c);
   if (!(await adminOf(c, v))) throw new ApiError(403, "forbidden", "This action is for registry admins.");
   return { v, form };
-}
-
-class Redirect extends Error {
-  constructor(public readonly location: string) {
-    super("redirect");
-  }
 }
 
 function redirect(location: string): Response {
@@ -237,13 +237,17 @@ admin.get("/", async (c) => {
 
 // --- Packages -------------------------------------------------------------
 
+/** The SQL condition of each value of the list's status filter. */
+const STATUS_FILTER = { pending: "p.approved_at IS NULL", approved: "p.approved_at IS NOT NULL", all: "1 = 1" };
+
 admin.get("/packages", async (c) => {
   const v = await requireAdmin(c);
   const q = (c.req.query("q") ?? "").slice(0, 128).trim();
-  const status = c.req.query("status") === "pending" ? "pending" : c.req.query("status") === "approved" ? "approved" : "all";
+  const asked = c.req.query("status");
+  const status = asked === "pending" || asked === "approved" ? asked : "all";
   const pageNo = pageParam(c);
   const where = [
-    status === "pending" ? "p.approved_at IS NULL" : status === "approved" ? "p.approved_at IS NOT NULL" : "1 = 1",
+    STATUS_FILTER[status],
     q
       ? "(p.id LIKE ?1 ESCAPE '\\' OR EXISTS (SELECT 1 FROM owners o JOIN users u ON u.id = o.user_id WHERE o.package_id = p.id AND u.login LIKE ?1 ESCAPE '\\'))"
       : "?1 = ?1",
@@ -363,7 +367,8 @@ for (const [action, yanked] of [["yank", true], ["unyank", false]] as const) {
     if (!before) throw new ApiError(404, "not_found", `There is no version ${c.req.param("version")} of \`${id}\`.`);
     const after = await setYanked(c.env, c.executionCtx, c.req.url, before, yanked);
     if (after !== before) await logAdminAction(c.env.DB, v.session.uid, action, id, version);
-    return redirect(`/admin/packages/${id}?m=${after !== before ? (yanked ? "yanked" : "unyanked") : "nothing"}`);
+    const done = yanked ? "yanked" : "unyanked";
+    return redirect(`/admin/packages/${id}?m=${after === before ? "nothing" : done}`);
   });
 }
 

@@ -129,8 +129,9 @@ export function validateMetadata(raw: unknown, id: string, version: string): Met
   const dependencies: Dependency[] = [];
   const deps = raw.dependencies;
   if (deps !== undefined && deps !== null) {
-    if (!Array.isArray(deps)) details.push("metadata.dependencies: must be an array");
-    else {
+    if (!Array.isArray(deps)) {
+      details.push("metadata.dependencies: must be an array");
+    } else {
       if (deps.length > MAX.dependencies) details.push(`metadata.dependencies: more than ${MAX.dependencies} entries`);
       const seen = new Set<string>();
       deps.forEach((d: unknown, i: number) => {

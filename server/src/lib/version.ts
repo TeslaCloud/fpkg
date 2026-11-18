@@ -34,7 +34,9 @@ export function parseVersion(text: string): Version | null {
       if (/^\d+$/.test(id) && id.length > MAX_DIGITS) return null;
     }
   }
-  const written = (m[3] !== undefined ? 3 : m[2] !== undefined ? 2 : 1) as 1 | 2 | 3;
+  let written: 1 | 2 | 3 = 1;
+  if (m[3] !== undefined) written = 3;
+  else if (m[2] !== undefined) written = 2;
   return {
     major: stripZeros(m[1]!),
     minor: stripZeros(m[2] ?? "0"),
@@ -60,9 +62,14 @@ export function isCanonical(text: string): boolean {
   return canonicalize(text) === text;
 }
 
+/** -1, 0 or 1: how `a` is ordered against `b` (strings by code unit). */
+function order<T extends string | number>(a: T, b: T): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 function compareNumeric(a: string, b: string): number {
-  if (a.length !== b.length) return a.length < b.length ? -1 : 1;
-  return a < b ? -1 : a > b ? 1 : 0;
+  return order(a.length, b.length) || order(a, b);
 }
 
 /** semver 2.0 pre-release precedence. */
@@ -78,10 +85,10 @@ function compareSuffix(a: string, b: string): number {
     if (xn && yn) c = compareNumeric(x, y);
     else if (xn) c = -1;
     else if (yn) c = 1;
-    else c = x < y ? -1 : x > y ? 1 : 0;
+    else c = order(x, y);
     if (c !== 0) return c;
   }
-  return xs.length === ys.length ? 0 : xs.length < ys.length ? -1 : 1;
+  return order(xs.length, ys.length);
 }
 
 export function compareVersions(a: Version, b: Version): number {
@@ -165,6 +172,8 @@ export function satisfiesRequirement(v: Version, r: Requirement): boolean {
       return c < 0;
     case "~>":
       return c >= 0 && compareVersions(v, pessimisticUpperBound(r.version)) < 0;
+    default:
+      return r.op satisfies never;
   }
 }
 

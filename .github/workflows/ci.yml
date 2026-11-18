@@ -1,4 +1,5 @@
-# cargo fmt and cargo test, the server's tests, and the conformance suite against `wrangler dev`.
+# cargo fmt and cargo test, the server's lint (oxlint), typecheck and tests, and the conformance
+# suite against `wrangler dev`.
 # fpkg, nl-lang/nl (fpkg-core depends on ../nl) and Meow/fdoc are checked out side by side.
 name: CI
 
@@ -57,6 +58,7 @@ jobs:
           cache: npm
           cache-dependency-path: fpkg/server/package-lock.json
       - run: npm ci
+      - run: npm run lint
       - name: Build fdoc.wasm
         run: scripts/build-fdoc.sh
       - run: npm run typecheck

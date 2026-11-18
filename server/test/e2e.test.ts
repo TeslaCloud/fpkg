@@ -83,6 +83,7 @@ describe("the registry API", () => {
     expect(body.error.code).toBe("validation_failed");
     expect(body.error.details.join()).toMatch(/must be written canonically, as `1.0.0`/);
 
+    // oxlint-disable-next-line no-script-url -- a website the registry must refuse
     res = await publish(luna.token, id, "2.0.0", archive, meta(id, "2.0.0", { name: "Other Name", website: "javascript:alert(1)" }));
     expect(res.status).toBe(422);
     body = (await res.json()) as typeof body;
@@ -104,7 +105,7 @@ describe("the registry API", () => {
     res = await publish(luna.token, id, "1.0.0", archive, { ...withDep, allow_missing_dependencies: true });
     expect(res.status).toBe(202);
     await approve(id);
-    const published = (await res.json()) as Record<string, any>;
+    const published = (await res.json()) as Record<string, unknown>;
     expect(published).toMatchObject({
       id,
       version: "1.0.0",
@@ -129,7 +130,7 @@ describe("the registry API", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("public, max-age=60, stale-while-revalidate=600");
     expect(res.headers.get("ETag")).toBe(`"${id}-1"`);
-    const doc = (await res.json()) as Record<string, any>;
+    const doc = (await res.json()) as { versions: object };
     expect(doc).toMatchObject({ id, revision: 1, status: "approved", owners: [`luna${run}`], latest: "1.0.0" });
     expect(Object.keys(doc.versions)).toEqual(["1.0.0"]);
     res = await SELF.fetch(`${API}/packages/${id}`, { headers: { "If-None-Match": `"${id}-1"` } });
@@ -140,7 +141,7 @@ describe("the registry API", () => {
     expect((await publish(luna.token, id, "1.1.0", packageZip(id, "1.1.0"), meta(id, "1.1.0"))).status).toBe(201);
     res = await SELF.fetch(`${API}/packages/${id}`, { headers: { "If-None-Match": `"${id}-1"` } });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as Record<string, any>)).toMatchObject({ revision: 2, latest: "1.1.0" });
+    expect(await res.json()).toMatchObject({ revision: 2, latest: "1.1.0" });
 
     // One version, immutable, and `1.1` finds `1.1.0`.
     res = await SELF.fetch(`${API}/packages/${id}/versions/1.0.0`);
@@ -183,7 +184,7 @@ describe("the registry API", () => {
     res = await SELF.fetch(`${API}/packages/${id}/versions/01.1`);
     expect(((await res.json()) as { yanked: boolean }).yanked).toBe(true);
     res = await SELF.fetch(`${API}/packages/${id}`);
-    expect(((await res.json()) as Record<string, any>)).toMatchObject({ revision: 3, latest: "1.0.0" });
+    expect(await res.json()).toMatchObject({ revision: 3, latest: "1.0.0" });
     // A yanked version still downloads (locks keep working).
     expect((await SELF.fetch(`${API}/packages/${id}/versions/1.1.0/archive`)).status).toBe(200);
     res = await SELF.fetch(`${API}/packages/${id}/versions/1.1.0/unyank`, { method: "POST", ...auth(luna.token) });
@@ -238,7 +239,7 @@ describe("the registry API", () => {
     expect((await res.json()) as Record<string, unknown>).toMatchObject({ total: 3, page: 1, per_page: 2 });
     expect(await (await SELF.fetch(`${API}/me`, auth(luna.token))).json()).toEqual({ login: `luna${run}`, token_name: `luna${run}-token` });
     expect((await SELF.fetch(`${API}/me`)).status).toBe(401);
-    expect((await SELF.fetch(`${API}/me`, auth("fpk_" + "x".repeat(43)))).status).toBe(401);
+    expect((await SELF.fetch(`${API}/me`, auth(`fpk_${"x".repeat(43)}`))).status).toBe(401);
     res = await SELF.fetch(`${API}/packages/${id}`, { method: "PATCH" });
     expect(res.status).toBe(405);
     expect(res.headers.get("Allow")).toBe("GET, HEAD");

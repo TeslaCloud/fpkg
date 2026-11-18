@@ -15,7 +15,7 @@ describe("session cookies", () => {
   it("refuses tampering, other secrets and other purposes", async () => {
     const value = await signSession(SECRET, 7, "luna");
     const [body, mac] = value.split(".");
-    const forged = btoa(JSON.stringify({ uid: 1, login: "admin", exp: 9999999999 })).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+    const forged = btoa(JSON.stringify({ uid: 1, login: "admin", exp: 9999999999 })).replace(/[=]+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
     expect(await verifySession(SECRET, `${forged}.${mac}`)).toBeNull();
     expect(await verifySession(SECRET, `${body}.${mac!.slice(0, -2)}AA`)).toBeNull();
     expect(await verifySession("another-secret-entirely", value)).toBeNull();
@@ -29,7 +29,7 @@ describe("session cookies", () => {
   it("derives a stable CSRF token per session", async () => {
     const a = await signSession(SECRET, 1, "a");
     expect(await csrfToken(SECRET, a)).toBe(await csrfToken(SECRET, a));
-    expect(await csrfToken(SECRET, a)).not.toBe(await csrfToken(SECRET, a + "x"));
+    expect(await csrfToken(SECRET, a)).not.toBe(await csrfToken(SECRET, `${a}x`));
   });
 });
 

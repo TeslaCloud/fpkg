@@ -127,7 +127,8 @@ function versionRows(doc: { versions: Record<string, VersionMetadata> }, pending
 }
 
 function realm(m: VersionMetadata): string {
-  return m.serverside ? "Server only" : m.clientside ? "Client only" : "Shared";
+  if (m.serverside) return "Server only";
+  return m.clientside ? "Client only" : "Shared";
 }
 
 web.get("/packages/:id", (c) =>
@@ -214,8 +215,9 @@ web.get("/packages/:id/:version/source/*", (c) => {
   }
   const rel = comps.join("/");
   const canonical = canonicalize(version);
-  if (!isValidId(id) || !canonical || rel === "" || comps.some((s) => s === "" || s === "." || s === ".." || s.includes("/")))
+  if (!isValidId(id) || !canonical || rel === "" || comps.some((s) => s === "" || s === "." || s === ".." || s.includes("/"))) {
     throw new ApiError(404, "not_found", "There is no such file.");
+  }
   if (canonical !== version) {
     return new Response(null, {
       status: 301,
@@ -399,6 +401,8 @@ export async function webNotFound(c: C): Promise<Response> {
 
 web.notFound(webNotFound);
 
+const ERROR_HEADINGS: Record<number, string> = { 403: "Not allowed", 404: "Not found" };
+
 export async function webError(err: Error, c: C): Promise<Response> {
   const status = err instanceof ApiError ? err.status : 500;
   if (!(err instanceof ApiError)) console.error(`${c.req.method} ${c.req.url}:`, err);
@@ -406,7 +410,7 @@ export async function webError(err: Error, c: C): Promise<Response> {
   const v = await visitor(c).catch(() => null);
   return page({
     title: `${status === 404 ? "Not found" : "Error"} - fluxpkg`,
-    body: html`<h1>${status === 404 ? "Not found" : status === 403 ? "Not allowed" : "Something went wrong"}</h1><p>${message}</p>`,
+    body: html`<h1>${ERROR_HEADINGS[status] ?? "Something went wrong"}</h1><p>${message}</p>`,
     status,
     cacheControl: CACHE_CONTROL.noStore,
     ...chrome(c, v),

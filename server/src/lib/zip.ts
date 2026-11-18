@@ -78,7 +78,7 @@ function crcTable(): Uint32Array {
 export function crc32(crc: number, data: Uint8Array): number {
   const t = crcTable();
   let c = ~crc >>> 0;
-  for (let i = 0; i < data.length; i++) c = t[(c ^ data[i]!) & 0xff]! ^ (c >>> 8);
+  for (const b of data) c = t[(c ^ b) & 0xff]! ^ (c >>> 8);
   return ~c >>> 0;
 }
 
@@ -192,6 +192,7 @@ export function nonRegular(entry: ZipEntry): string | null {
 export function pathProblem(id: string, name: string, maxComponent: number = LIMITS.component): string | null {
   if (name.length === 0) return "an empty path";
   if (name.includes("\\")) return "a backslash";
+  // oxlint-disable-next-line no-control-regex -- control characters are what is refused
   if (/[\u0000-\u001f\u007f]/.test(name)) return "a control character";
   if (name.startsWith("/")) return "an absolute path";
   if (/^[A-Za-z]:/.test(name)) return "a drive letter";
@@ -277,8 +278,9 @@ export function validateArchive(buf: Uint8Array, id: string, limits: Limits = LI
     if (e.method !== 0 && e.method !== 8) problems.push(`${label} uses compression method ${e.method} (only store and deflate are allowed)`);
     if (e.method === 0 && e.size !== e.compressedSize) problems.push(`${label} is stored with differing sizes`);
     if (e.size === 0xffffffff || e.compressedSize === 0xffffffff || e.localOffset === 0xffffffff) problems.push(`${label} needs zip64`);
-    if (e.size > 0 && e.size >= limits.ratio * Math.max(1, e.compressedSize))
+    if (e.size > 0 && e.size >= limits.ratio * Math.max(1, e.compressedSize)) {
       problems.push(`${label} has a compression ratio of ${Math.floor(e.size / Math.max(1, e.compressedSize))}:1, the limit is under ${limits.ratio}:1`);
+    }
     total += e.size;
   }
   // A file and a directory of the same path cannot both be extracted.

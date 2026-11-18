@@ -23,6 +23,11 @@ type Tok =
 
 const SYMBOLS = ["...", "..", "==", "~=", "!=", "<=", ">=", "&&", "||", "::", "<<", ">>", "//"];
 
+/** The multi-character symbol at `i`, if there is one. */
+function symbolAt(src: string, i: number): string | undefined {
+  return SYMBOLS.find((s) => src.startsWith(s, i));
+}
+
 function longBracketLevel(src: string, i: number): number {
   // At `[`: returns the level of `[==[`, or -1 if it is not a long bracket.
   let j = i + 1;
@@ -36,7 +41,7 @@ function longBracketLevel(src: string, i: number): number {
 
 function readLongBracket(src: string, i: number, level: number): { text: string; end: number } | null {
   const open = i + level + 2;
-  const close = "]" + "=".repeat(level) + "]";
+  const close = `]${"=".repeat(level)}]`;
   const end = src.indexOf(close, open);
   if (end < 0) return null;
   let text = src.slice(open, end);
@@ -183,7 +188,7 @@ export function tokenize(src: string): { toks: Tok[]; error: string | null } {
       advance(i + m[0].length);
       continue;
     }
-    const sym = SYMBOLS.find((s) => src.startsWith(s, i)) ?? c;
+    const sym = symbolAt(src, i) ?? c;
     toks.push({ t: "sym", v: sym, line });
     advance(i + sym.length);
   }

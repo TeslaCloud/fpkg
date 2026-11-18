@@ -35,7 +35,14 @@ const form = (fields: Record<string, string>) => {
   for (const [k, v] of Object.entries(fields)) f.append(k, v);
   return f;
 };
-const json = async (res: Response) => (await res.json()) as Record<string, any>;
+/** What the tests read of the API's answers. */
+interface Body {
+  total: number;
+  owners: string[];
+  yanked: boolean;
+  error: { code: string; details: string[] };
+}
+const json = async (res: Response) => (await res.json()) as Body;
 
 /** An admin's page and its CSRF token. */
 async function adminGet(cookie: string, path: string): Promise<{ status: number; text: string; csrf: string }> {
@@ -73,10 +80,10 @@ describe("approval", () => {
       expect((await SELF.fetch(url)).status, url).toBe(404);
       expect((await SELF.fetch(url, auth(other.token))).status, url).toBe(404);
       // A bad token is not told apart from no token: a 401 would say the id is taken.
-      expect((await SELF.fetch(url, auth("fpk_" + "x".repeat(43)))).status, url).toBe(404);
+      expect((await SELF.fetch(url, auth(`fpk_${"x".repeat(43)}`))).status, url).toBe(404);
       expect((await SELF.fetch(url, { headers: { Authorization: "Basic xyz" } })).status, url).toBe(404);
     }
-    expect((await SELF.fetch(`${API}/packages/nope_${run}`, auth("fpk_" + "x".repeat(43)))).status).toBe(404);
+    expect((await SELF.fetch(`${API}/packages/nope_${run}`, auth(`fpk_${"x".repeat(43)}`))).status).toBe(404);
     expect((await SELF.fetch(`${DOCS}/${id}/`, { redirect: "manual" })).status).toBe(404);
     expect((await json(await SELF.fetch(`${API}/search?q=${id}`))).total).toBe(0);
     expect(await (await SELF.fetch(`${SITE}/`)).text()).not.toContain(`/packages/${id}`);

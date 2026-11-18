@@ -15,6 +15,16 @@ import { FDOC_FAILURE, contentType, docsCsp, docsPrefix, enqueueDocs, generateDo
 /** Retry-After of the "being generated" page. */
 const RETRY_SECONDS = 30;
 
+/** Page paths of recent on-demand generations in this isolate, newest last. */
+const generated = new Map<string, Set<string>>();
+const GENERATED_ENTRIES = 64;
+
+function remember(key: string, paths: Set<string>): void {
+  generated.delete(key);
+  generated.set(key, paths);
+  while (generated.size > GENERATED_ENTRIES) generated.delete(generated.keys().next().value!);
+}
+
 function docsBase(env: Env): string {
   return trimSlash(env.DOCS_URL);
 }
@@ -39,6 +49,7 @@ function segments(pathname: string): string[] | null {
       return null;
     }
     if (s === "" && i !== parts.length - 1) return null;
+    // oxlint-disable-next-line no-control-regex -- control characters are what is refused
     if (s === "." || s === ".." || s.includes("\\") || s.includes("/") || /[\u0000-\u001f]/.test(s)) return null;
     out.push(s);
   }
@@ -120,7 +131,7 @@ async function servePage(env: Env, ctx: Ctx, id: string, version: string, path: 
   if (!row || row.approved_at === null) return notFoundPage(`There is no version ${version} of \`${id}\`.`);
   const current = row.docs_version === env.FDOC_VERSION;
   // Ready means the page does not exist, unless R2 lifecycle expired the whole generation.
-  if (current && row.docs_status === "ready" && (path === "index.html" ? false : await env.DOCS.head(docsPrefix(env, id, version) + "index.html"))) {
+  if (current && row.docs_status === "ready" && (path === "index.html" ? false : await env.DOCS.head(`${docsPrefix(env, id, version)}index.html`))) {
     return notFoundPage(`The documentation of ${id} ${version} has no page \`${path}\`.`);
   }
   if (current && row.docs_status === "failed" && row.docs_error?.startsWith(FDOC_FAILURE)) return failedPage(id, version, row.docs_error);
@@ -157,15 +168,6 @@ async function servePage(env: Env, ctx: Ctx, id: string, version: string, path: 
   return pageResponse(env, path, page.content, gen.sha256, await docsCsp());
 }
 
-/** Page paths of recent on-demand generations in this isolate, newest last. */
-const generated = new Map<string, Set<string>>();
-const GENERATED_ENTRIES = 64;
-
-function remember(key: string, paths: Set<string>): void {
-  generated.delete(key);
-  generated.set(key, paths);
-  while (generated.size > GENERATED_ENTRIES) generated.delete(generated.keys().next().value!);
-}
 
 function failedPage(id: string, version: string, error: string | null): Response {
   return plainPage(

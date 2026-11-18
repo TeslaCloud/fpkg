@@ -8,7 +8,7 @@ const encoder = new TextEncoder();
 export function base64url(bytes: Uint8Array): string {
   let s = "";
   for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/[=]+$/, "");
 }
 
 export function fromBase64url(text: string): Uint8Array | null {

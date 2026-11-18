@@ -91,6 +91,7 @@ scripts/build-fdoc.sh          # wasm/fdoc.wasm and .fdoc-version, from ../../fd
 cp .dev.vars.example .dev.vars # SESSION_SECRET, and a local OAuth app if you want to log in
 npm run migrate:local
 npm run dev                    # http://127.0.0.1:8788/, docs at http://127.0.0.1:8788/_docs/
+npm run lint                   # oxlint, configured in .oxlintrc.json
 npm run typecheck
 npm test
 ```

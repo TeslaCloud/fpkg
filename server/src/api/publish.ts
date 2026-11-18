@@ -44,9 +44,11 @@ export async function publish(c: C): Promise<Response> {
   const grammar: string[] = [];
   if (!isValidId(id)) grammar.push(`id: \`${id}\` does not match ${ID_RE.source}`);
   const parsed = parseVersion(version);
-  if (!parsed) grammar.push(`version: \`${version}\` is not a version (X.Y.Z[-suffix])`);
-  else if (formatVersion(parsed) !== version)
+  if (!parsed) {
+    grammar.push(`version: \`${version}\` is not a version (X.Y.Z[-suffix])`);
+  } else if (formatVersion(parsed) !== version) {
     grammar.push(`version: \`${version}\` must be written canonically, as \`${formatVersion(parsed)}\` (three components)`);
+  }
   if (grammar.length > 0) throw invalid("the package id or version is invalid", grammar);
 
   // Rate limit, then existence (409), ownership, and the cap on a non-admin's pending packages.
@@ -215,9 +217,11 @@ async function checkDependencies(db: D1Database, metadata: StoredMetadata): Prom
   for (const d of metadata.dependencies) {
     const versions = byId.get(d.id) ?? [];
     const constraint = parseConstraint(d.constraint)!;
-    if (versions.length === 0) problems.push(`dependency \`${d.id}\`: not on the registry (or every version is yanked)`);
-    else if (!versions.some((v) => satisfies(parseVersion(v)!, constraint)))
+    if (versions.length === 0) {
+      problems.push(`dependency \`${d.id}\`: not on the registry (or every version is yanked)`);
+    } else if (!versions.some((v) => satisfies(parseVersion(v)!, constraint))) {
       problems.push(`dependency \`${d.id} ${d.constraint}\`: no published version satisfies it (have ${versions.join(", ")})`);
+    }
   }
   return problems;
 }

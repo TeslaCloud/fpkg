@@ -24,7 +24,7 @@ describe("GitHub OAuth", () => {
     const real = globalThis.fetch;
     const calls: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const url = input instanceof Request ? input.url : String(input);
       if (url === "https://github.com/login/oauth/access_token") {
         calls.push(`token ${JSON.parse(String(init?.body)).code}`);
         return Response.json({ access_token: "gho_test" });
@@ -51,7 +51,7 @@ describe("GitHub OAuth", () => {
     // A state without its nonce cookie, or a forged one, is refused.
     res = await SELF.fetch(`${SITE}/auth/github/callback?code=c1&state=${encodeURIComponent(state)}`, { redirect: "manual" });
     expect(res.status).toBe(400);
-    res = await SELF.fetch(`${SITE}/auth/github/callback?code=c1&state=${encodeURIComponent(state + "x")}`, {
+    res = await SELF.fetch(`${SITE}/auth/github/callback?code=c1&state=${encodeURIComponent(`${state}x`)}`, {
       redirect: "manual",
       headers: { Cookie: `fpkg_oauth=${nonce}` },
     });

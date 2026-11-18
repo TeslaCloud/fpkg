@@ -31,7 +31,8 @@ scripts/prepare-nl.sh            # uses ../nl; NL_DIR=/path/to/nl to point elsew
 cargo build --release            # target/release/fpkg
 ```
 
-The code is formatted with `cargo fmt` (the default style), which CI checks.
+The code is formatted with `cargo fmt` (the default style), which CI checks. The server's
+TypeScript is linted with oxlint (`npm run lint` in `server/`), which CI checks as well.
 
 A build without the prepared crate fails at link time on `nl_version_0_1`; that is
 intended.

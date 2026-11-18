@@ -102,15 +102,15 @@ export type Generation =
   | { status: "too_large"; bytes: number };
 
 /**
- * Generates a version's docs unless its source exceeds `maxSourceBytes`. Throws FdocError when
+ * Generates a version's docs unless its source exceeds `limit` bytes. Throws FdocError when
  * fdoc refuses the package (deterministic), other errors for retryable infrastructure failures.
  */
-export async function generateDocs(env: Env, id: string, version: string, maxSourceBytes: number): Promise<Generation> {
+export async function generateDocs(env: Env, id: string, version: string, limit: number): Promise<Generation> {
   const row = await getVersionRow(env.DB, id, version);
   // A pending package has no public docs; its job is queued when it is approved.
   if (!row || row.package_approved_at === null) return { status: "missing" };
   const meta = JSON.parse(row.metadata) as StoredMetadata;
-  const input = await encodeInput(env, id, version, meta.name, maxSourceBytes);
+  const input = await encodeInput(env, id, version, meta.name, limit);
   if ("tooLarge" in input) return { status: "too_large", bytes: input.tooLarge };
   const out = await fdocGenerateBytes(input.bytes);
   return { status: "ok", pages: out.pages, sha256: row.sha256, warnings: out.warnings };

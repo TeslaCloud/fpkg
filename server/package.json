@@ -8,6 +8,7 @@
   "scripts": {
     "build:fdoc": "scripts/build-fdoc.sh",
     "dev": "wrangler dev --local --ip 127.0.0.1 --port 8788 --var FDOC_VERSION:$(cat .fdoc-version 2>/dev/null || echo dev) --var SITE_URL:http://127.0.0.1:8788 --var DOCS_URL:http://127.0.0.1:8788/_docs",
+    "lint": "oxlint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "migrate:local": "wrangler d1 migrations apply DB --local",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.8.4",
     "@cloudflare/workers-types": "5.20261118.1",
+    "oxlint": "1.94.0",
     "typescript": "7.0.2",
     "vitest": "5.1.1",
     "wrangler": "4.164.0"

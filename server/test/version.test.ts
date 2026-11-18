@@ -51,18 +51,20 @@ describe("ordering", () => {
   ];
 
   it("is numeric per component, pre-releases first (Flux's concatenated sum is not)", () => {
-    for (let i = 0; i < ordered.length; i++)
+    for (let i = 0; i < ordered.length; i++) {
       for (let j = 0; j < ordered.length; j++) {
         const c = compareVersions(parseVersion(ordered[i]!)!, parseVersion(ordered[j]!)!);
         expect(Math.sign(c), `${ordered[i]} vs ${ordered[j]}`).toBe(Math.sign(i - j));
       }
+    }
   });
 
   it("sort keys sort bytewise like compareVersions", () => {
     const extra = ["1.0.0-a", "1.0.0-a-b", "1.0.0-a.x", "1.0.0-ab", "1.0.0-1", "1.0.0-2.a", "1.0.0-10", "1.0.0-a.1.2", "0.0.0", "99999999999999999999.0.0"];
     const all = [...ordered, ...extra].map((v) => parseVersion(v)!);
     const byCompare = [...all].sort(compareVersions).map((v) => sortKey(v));
-    const byKey = all.map((v) => sortKey(v)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    // Without a comparator, strings sort by code unit.
+    const byKey = all.map((v) => sortKey(v)).sort();
     expect(byKey).toEqual(byCompare);
   });
 });
