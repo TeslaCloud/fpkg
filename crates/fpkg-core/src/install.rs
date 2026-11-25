@@ -148,6 +148,8 @@ pub struct Loaded {
     pub paths: BTreeMap<String, (String, Manifest)>,
     /// Unmarked directories that the lock records as registry packages.
     pub conflicts: Vec<String>,
+    /// Workspace packages whose spec does not evaluate, by id (only from `load_used`).
+    pub broken: BTreeMap<String, SpecError>,
 }
 
 impl Loaded {
@@ -208,6 +210,26 @@ impl Loaded {
 /// symlinked directory and the packages nested in a workspace directory are
 /// always workspace packages.
 pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Loaded, InstallError> {
+    load_with(project, env, lock, true)
+}
+
+/// `load` for a command that needs only the packages the project uses (`load_order`): a
+/// workspace package whose spec does not evaluate is kept in `broken`, an error only when
+/// `load_order` reaches it.
+pub fn load_used(
+    project: &Project,
+    env: Env,
+    lock: Option<&Lockfile>,
+) -> Result<Loaded, InstallError> {
+    load_with(project, env, lock, false)
+}
+
+fn load_with(
+    project: &Project,
+    env: Env,
+    lock: Option<&Lockfile>,
+    strict: bool,
+) -> Result<Loaded, InstallError> {
     let mut installed = BTreeMap::new();
     let mut conflicts = Vec::new();
     let mut locs: Vec<SpecLocation> = vec![project.root_location()];
@@ -237,8 +259,17 @@ pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Load
     let mut results = spec::load_many(&locs, env).into_iter();
     let root = results.next().unwrap_or(Err(SpecError::NoEvaluator))?;
     let mut workspace = BTreeMap::new();
+    let mut broken = BTreeMap::new();
     for (loc, r) in locs.iter().skip(1).zip(results) {
-        workspace.insert(loc.id.clone(), r?);
+        match r {
+            Ok(m) => {
+                workspace.insert(loc.id.clone(), m);
+            }
+            Err(e) if !strict => {
+                broken.insert(loc.id.clone(), e);
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
     let mut path_locs = Vec::new();
     for d in root.dependencies.iter().filter(|d| d.kind == DepKind::Path) {
@@ -258,6 +289,7 @@ pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Load
         installed,
         paths,
         conflicts,
+        broken,
     })
 }
 
@@ -580,6 +612,141 @@ fn package_sources(
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+/// A package of the project as Flux loads it.
+#[derive(Clone, Debug)]
+pub struct ProjectPackage {
+    pub id: String,
+    /// Its directory, as the project reaches it (not resolved through symlinks).
+    pub dir: PathBuf,
+    /// Its folder in the `LUA` search path with a trailing slash:
+    /// `<gamemode>/packages/<id>/`, `<gamemode>/` for the project itself.
+    pub lua_path: String,
+    pub manifest: Manifest,
+}
+
+/// The packages of a project in load order.
+#[derive(Clone, Debug, Default)]
+pub struct LoadOrder {
+    /// Dependencies first, the project manifest last.
+    pub packages: Vec<ProjectPackage>,
+    /// Dependencies that are neither local nor installed: (id, the package that names it).
+    pub missing: Vec<(String, String)>,
+    /// Nested packages that are needed before the package they are nested in is included,
+    /// which the server cannot find yet: (id, the package that names it, the outer package).
+    pub too_early: Vec<(String, String, String)>,
+}
+
+/// Every package the project uses, in the order Flux includes them: depth first along the
+/// `s.depends` of each manifest from the project's own, in the order they are written,
+/// each package after its dependencies and once; the project comes last. The dependencies of
+/// a package marked `s.clientside` are not followed, as the server does not follow them. A
+/// nested package (`packages/<outer>/packages/<id>`) is found only once its outer package
+/// has been reached, as Flux adds a package's `packages/` folder to its search paths when it
+/// includes it. Workspace, linked, nested and path packages use the manifests `loaded` has;
+/// installed registry packages are evaluated here. A package whose spec does not evaluate
+/// (an installed one, or a workspace one `load_used` kept in `broken`) is an error only
+/// when the project uses it. Packages nothing depends on are left out, as Flux
+/// leaves them out. A cycle is the error `fpkg install` gives for it.
+pub fn load_order(loaded: &Loaded, env: Env) -> Result<LoadOrder, InstallError> {
+    let project = &loaded.project;
+    let mut installed = BTreeMap::new();
+    let locs: Vec<SpecLocation> = loaded
+        .installed
+        .values()
+        .map(|p| project.location(p))
+        .collect();
+    for (loc, r) in locs.iter().zip(spec::load_many(&locs, env)) {
+        installed.insert(loc.id.clone(), (loc.clone(), r));
+    }
+    let find = |id: &str| -> Result<Option<ProjectPackage>, InstallError> {
+        if let Some(e) = loaded.broken.get(id) {
+            return Err(InstallError::Spec(e.clone()));
+        }
+        if let (Some(d), Some(m)) = (loaded.dirs.get(id), loaded.workspace.get(id)) {
+            return Ok(Some(ProjectPackage {
+                id: id.to_string(),
+                dir: d.dir.clone(),
+                lua_path: project.location(d).lua_path,
+                manifest: m.clone(),
+            }));
+        }
+        if let Some((rel, m)) = loaded.paths.get(id) {
+            return Ok(Some(ProjectPackage {
+                id: id.to_string(),
+                dir: project.root.join(rel),
+                lua_path: project.path_dep_lua_path(rel),
+                manifest: m.clone(),
+            }));
+        }
+        match installed.get(id) {
+            Some((loc, Ok(m))) => Ok(Some(ProjectPackage {
+                id: id.to_string(),
+                dir: loc.dir.clone(),
+                lua_path: loc.lua_path.clone(),
+                manifest: m.clone(),
+            })),
+            Some((_, Err(e))) => Err(InstallError::Spec(e.clone())),
+            None => Ok(None),
+        }
+    };
+    let mut order = LoadOrder::default();
+    let mut seen = BTreeSet::new();
+    seen.insert(project.id.clone());
+    let mut stack: Vec<(ProjectPackage, usize)> = vec![(
+        ProjectPackage {
+            id: project.id.clone(),
+            dir: project.given_root.clone(),
+            lua_path: project.root_location().lua_path,
+            manifest: loaded.root.clone(),
+        },
+        0,
+    )];
+    while let Some((pkg, next)) = stack.pop() {
+        let deps: Vec<String> = if pkg.manifest.clientside {
+            Vec::new()
+        } else {
+            pkg.manifest
+                .package_deps()
+                .filter_map(|d| d.package_id().map(str::to_string))
+                .collect()
+        };
+        let Some(dep) = deps.get(next).cloned() else {
+            order.packages.push(pkg);
+            continue;
+        };
+        if let Some(start) = stack.iter().position(|(p, _)| p.id == dep) {
+            let mut cycle: Vec<String> = stack[start..].iter().map(|(p, _)| p.id.clone()).collect();
+            cycle.push(pkg.id.clone());
+            cycle.push(dep);
+            return Err(InstallError::Resolve(ResolveError::Cycle(cycle)));
+        }
+        if dep == pkg.id {
+            return Err(InstallError::Resolve(ResolveError::Cycle(vec![
+                dep.clone(),
+                dep,
+            ])));
+        }
+        let parent = pkg.id.clone();
+        stack.push((pkg, next + 1));
+        if !seen.contains(&dep) {
+            let outer = loaded.dirs.get(&dep).and_then(|d| d.outer.clone());
+            match outer {
+                Some(o) if !seen.contains(&o) => {
+                    order.too_early.push((dep, parent, o));
+                    continue;
+                }
+                _ => {}
+            }
+            seen.insert(dep.clone());
+            match find(&dep)? {
+                Some(p) => stack.push((p, 0)),
+                None => order.missing.push((dep, parent)),
+            }
+        }
+    }
+    Ok(order)
 }
 
 /// Whether an installed directory still hashes to its marker's tree hash.

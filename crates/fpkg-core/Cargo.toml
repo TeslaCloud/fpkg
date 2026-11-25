@@ -1,6 +1,6 @@
 [package]
 name = "fpkg-core"
-description = "Flux package management: specs, archives, lockfiles, resolution, registries"
+description = "Flux package management: specs, archives, lockfiles, resolution, registries, tasks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 dirs = "7.0.0"
+fpkg-glua = { workspace = true }
 hex = "0.4.3"
 ignore = "0.4.34"
 libc = "0.2.191"

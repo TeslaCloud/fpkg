@@ -1,5 +1,6 @@
 //! Flux package management: specs, versions, archives, the lockfile, resolution,
-//! registries, install and verify. Prints nothing and never prompts.
+//! registries, install, verify and tasks. Prints nothing and never prompts (the Lua of a
+//! task prints through the runtime's console).
 
 pub mod archive;
 pub mod auth;
@@ -12,6 +13,7 @@ pub mod project;
 pub mod registry;
 pub mod resolve;
 pub mod spec;
+pub mod tasks;
 pub mod version;
 
 pub use id::{IdError, PackageId, nearest_id};
