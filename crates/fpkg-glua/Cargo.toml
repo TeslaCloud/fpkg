@@ -1,0 +1,24 @@
+[package]
+name = "fpkg-glua"
+description = "A Garry's Mod server-side Lua environment without the game, for fpkg tasks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+crc32fast = "1.5.5"
+hex = "0.4.3"
+md-5 = "0.11.0"
+nl = { path = "../../../nl/crates/nl" }
+# The SQLite of the game's sql library; bundled, so the static musl and the
+# MinGW builds compile it with the C compiler they already use for LuaJIT.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"

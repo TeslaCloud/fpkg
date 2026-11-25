@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 fpkg-core = { path = "crates/fpkg-core" }
+fpkg-glua = { path = "crates/fpkg-glua" }
 
 [patch.crates-io]
 # The nl fork of LuaJIT as a luajit-src crate, prepared by scripts/prepare-nl.sh
