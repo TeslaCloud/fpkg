@@ -1,0 +1,7 @@
+"taskgm"
+{
+	"base"		"base"
+	"title"		"Task GM"
+	"maps"		"^gm_"
+	"menusystem"	"1"
+}

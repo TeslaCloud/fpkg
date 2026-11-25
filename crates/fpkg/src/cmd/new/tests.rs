@@ -279,7 +279,7 @@ fn the_schema_spec_is_the_one_new_wrote() {
     assert!(yml.lines().all(|l| l.len() <= 100), "{yml}");
     assert_eq!(
         file(&files, ".gitignore"),
-        "/packages/*\n/db/\n/config/*\n!/config/.gitkeep\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/target/\n"
+        "/packages/*\n/db/\n/config/*\n!/config/.gitkeep\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/target/\n/.fpkg/garrysmod/\n"
     );
     assert_eq!(file(&files, "config/.gitkeep"), "");
     assert_eq!(

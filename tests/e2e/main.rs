@@ -3,6 +3,7 @@
 
 #[path = "../support/mock_registry.rs"]
 mod mock_registry;
+mod tasks;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -775,7 +776,7 @@ fn linked_flux_ce_in_a_gamemode_project() {
     );
     assert_eq!(
         read(&schema.join(".gitignore")),
-        "/packages/*\n/db/\n/config/*\n!/config/.gitkeep\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/target/\n/docker-compose.override.yml\n"
+        "/packages/*\n/db/\n/config/*\n!/config/.gitkeep\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/target/\n/.fpkg/garrysmod/\n/docker-compose.override.yml\n"
     );
     assert_eq!(read(&schema.join("config/.gitkeep")), "");
     assert!(
@@ -1640,7 +1641,7 @@ fn new_kinds_and_where_they_go() {
             && !app.join("packages/inner/.gitignore").exists()
     );
     assert!(read(&app.join(".gitignore")).ends_with(
-        "/content/resource/fonts/fa-*.ttf\n/target/\n/docker-compose.override.yml\n!/packages/inner/\n"
+        "/content/resource/fonts/fa-*.ttf\n/target/\n/.fpkg/garrysmod/\n/docker-compose.override.yml\n!/packages/inner/\n"
     ));
     let o = code(env.fpkg_in(&app, &["new", "package", "inner"]), 2);
     assert!(text(&o).contains("already exists"), "{}", text(&o));

@@ -599,6 +599,24 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
         None => spec::load_many(&targets, ctx.env),
     };
     let mut unknown = UnknownDeps::new(ctx, &project, &scan);
+    let compiles = targets.iter().all(|loc| {
+        let shown = format!("{}{}", loc.rel_dir(), fpkg_core::tasks::TASK_FILE);
+        fpkg_core::tasks::check_task_file(&loc.dir, &shown).is_none()
+    });
+    let mut task_diags: BTreeMap<String, Vec<spec::Diagnostic>> = BTreeMap::new();
+    if ids.is_empty() && compiles {
+        for (id, severity, message) in super::tasks::check_diagnostics(ctx) {
+            let id = if targets.iter().any(|l| l.id == id) {
+                id
+            } else {
+                project.id.clone()
+            };
+            task_diags
+                .entry(id)
+                .or_default()
+                .push(spec::Diagnostic { severity, message });
+        }
+    }
     let mut results = Vec::new();
     let mut failed = 0;
     let mut warned = 0;
@@ -626,6 +644,17 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
             ),
         };
         let mut diags = diags;
+        let task_file = format!("{}{}", loc.rel_dir(), fpkg_core::tasks::TASK_FILE);
+        if let Some(message) = fpkg_core::tasks::check_task_file(&loc.dir, &task_file) {
+            diags.push(spec::Diagnostic {
+                severity: Severity::Error,
+                message,
+            });
+        }
+        if let Some(mut more) = task_diags.remove(&loc.id) {
+            diags.append(&mut more);
+            diags.sort_by_key(|d| std::cmp::Reverse(d.severity));
+        }
         if loc.is_project_manifest && !layout.is_empty() {
             diags.append(&mut layout);
             diags.sort_by_key(|d| std::cmp::Reverse(d.severity));

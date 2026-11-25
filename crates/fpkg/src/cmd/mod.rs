@@ -5,6 +5,7 @@ mod link;
 mod local;
 mod new;
 mod remote;
+mod tasks;
 
 use std::cell::RefCell;
 use std::io::{BufRead, IsTerminal, Write};
@@ -89,7 +90,10 @@ pub fn print_error(out: &Out, e: &anyhow::Error) {
 /// What every command gets.
 pub struct Ctx {
     pub out: Out,
+    /// `--env`, production when it is not given.
     pub env: Env,
+    /// `--env` as given.
+    pub env_flag: Option<Env>,
     pub project_flag: Option<PathBuf>,
     pub server_flag: Option<PathBuf>,
     pub registry_flag: Option<String>,
@@ -342,7 +346,8 @@ pub fn open_url(out: &Out, url: &str) {
 pub fn run(cli: Cli, out: Out) -> Result<()> {
     let ctx = Ctx {
         out,
-        env: cli.env,
+        env: cli.env.unwrap_or_default(),
+        env_flag: cli.env,
         project_flag: cli.project,
         server_flag: cli.server,
         registry_flag: cli.registry,
@@ -381,7 +386,9 @@ pub fn run(cli: Cli, out: Out) -> Result<()> {
         Cmd::List => local::list(&ctx),
         Cmd::Tree { id } => local::tree(&ctx, id),
         Cmd::Info { spec } => local::info(&ctx, &spec),
-        Cmd::Check { ids, all } => local::check(&ctx, &ids, all),
+        Cmd::Check { ids, all } => {
+            tasks::on_large_stack(ctx, move |ctx| local::check(ctx, &ids, all))
+        }
         Cmd::Pack { id, out, list } => local::pack(&ctx, id, out, list),
         Cmd::Lock => deps::lock(&ctx),
         Cmd::Update { ids } => deps::update(&ctx, &ids),
@@ -413,6 +420,13 @@ pub fn run(cli: Cli, out: Out) -> Result<()> {
         Cmd::Docs { spec } => remote::docs(&ctx, &spec),
         Cmd::Cache { action } => remote::cache(&ctx, action),
         Cmd::Mirror { registry_url, dir } => remote::mirror(&ctx, &registry_url, &dir),
+        Cmd::Tasks { all, pattern } => {
+            tasks::on_large_stack(ctx, move |ctx| tasks::list(ctx, all, pattern.as_deref()))
+        }
+        Cmd::Run { words } => tasks::on_large_stack(ctx, move |ctx| tasks::run(ctx, &words)),
+        Cmd::External(words) => {
+            tasks::on_large_stack(ctx, move |ctx| tasks::shorthand(ctx, &words))
+        }
         Cmd::Completions { shell } => {
             let mut command = <Cli as clap::CommandFactory>::command();
             let mut script = Vec::new();

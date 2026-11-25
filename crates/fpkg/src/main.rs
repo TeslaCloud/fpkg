@@ -40,16 +40,16 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "URL", help_heading = GLOBAL)]
     pub registry: Option<String>,
     /// What IS_DEVELOPMENT, IS_TEST and IS_PRODUCTION say in the spec sandbox
+    /// (default: production); tasks see it as fpkg.env
     #[arg(
         long,
         global = true,
         value_name = "ENV",
-        default_value = "production",
         value_parser = PossibleValuesParser::new(["production", "development", "test"])
             .try_map(|s| parse_env(&s)),
         help_heading = GLOBAL
     )]
-    pub env: Env,
+    pub env: Option<Env>,
     /// Use the cache only (a file:// registry is read as well); fail with the
     /// ids it lacks
     #[arg(long, global = true, help_heading = GLOBAL)]
@@ -270,6 +270,36 @@ pub enum Cmd {
         /// The shell
         shell: clap_complete::Shell,
     },
+    /// List the tasks of the project, defined by the taskspec.lua files of its
+    /// packages: name and description, sorted. Given the exact name of a task, also
+    /// what it needs (its prerequisites)
+    Tasks {
+        /// Also list the tasks that have no description
+        #[arg(long)]
+        all: bool,
+        /// Only the tasks whose name contains this
+        pattern: Option<String>,
+    },
+    /// Run a task of the project in fpkg's Lua runtime, without the game
+    /// server. Every word after the task's name belongs to the task, flags
+    /// included: KEY=VALUE words are its options, the others its words. fpkg's
+    /// own flags go before the task's name (`fpkg -v run db:migrate`, `fpkg
+    /// --env test run db:migrate`). `fpkg <task>` is the same, for a name that
+    /// is not one of fpkg's commands
+    Run {
+        /// The task, such as db:migrate, then its options (KEY=VALUE) and words
+        #[arg(
+            required = true,
+            num_args = 1..,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "TASK"
+        )]
+        words: Vec<String>,
+    },
+    /// A task name used as a command: `fpkg db:migrate STEP=2`
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 /// What `fpkg new` scaffolds.
