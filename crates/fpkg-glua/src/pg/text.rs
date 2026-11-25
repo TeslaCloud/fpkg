@@ -479,13 +479,17 @@ fn atoi(text: &[u8]) -> i64 {
 /// The message of an error or a notice, as libpq builds it: `ERROR:  message`, the cursor
 /// display or ` at character n`, then `DETAIL:`, `HINT:`, `QUERY:` and, for an error,
 /// `CONTEXT:` lines, each ending with a line break. `query` is the text of the statement that
-/// was sent, when libpq knows it (not for one that was prepared).
+/// was sent, when libpq knows it (not for one that was prepared). Without any fields it is
+/// libpq's "no error message available".
 pub(crate) fn message(
     fields: &Fields,
     query: Option<&[u8]>,
     encoding: Encoding,
     error: bool,
 ) -> Vec<u8> {
+    if fields.0.is_empty() {
+        return b"no error message available\n".to_vec();
+    }
     let mut msg = Vec::new();
     if let Some(severity) = fields.get(b'S') {
         msg.extend_from_slice(severity);

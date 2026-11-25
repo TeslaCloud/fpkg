@@ -237,7 +237,12 @@ enum In {
     Msg(Message),
     Columns(Vec<Column>),
     CopyBoth,
+    /// An authentication request of a kind that postgres-protocol does not know.
+    Authentication(u32),
 }
+
+/// The authentication requests that postgres-protocol reads.
+const AUTHENTICATIONS: &[u32] = &[0, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12];
 
 fn row_description(body: &[u8]) -> Option<Vec<Column>> {
     let count = u16::from_be_bytes(body.get(..2)?.try_into().ok()?) as usize;
@@ -368,7 +373,14 @@ impl Drop for Link {
 /// Why an attempt to connect did not work, and whether it was the server that said no.
 struct Refusal {
     message: String,
+    /// Whether the server said no during authentication, which is what libpq tries the other
+    /// way of encryption after (and not an error after authentication, such as an unknown
+    /// database).
     by_server: bool,
+    /// Whether the session was encrypted when it was refused.
+    encrypted: bool,
+    /// Whether it was encryption that could not be set up.
+    negotiation: bool,
 }
 
 impl From<String> for Refusal {
@@ -376,6 +388,8 @@ impl From<String> for Refusal {
         Refusal {
             message,
             by_server: false,
+            encrypted: false,
+            negotiation: false,
         }
     }
 }
@@ -438,6 +452,45 @@ pub(crate) fn connect(options: &Options) -> Result<Link, String> {
                 String::from_utf8_lossy(other)
             ));
         }
+    };
+    let rootcert = options
+        .sslrootcert
+        .as_ref()
+        .filter(|r| !r.is_empty())
+        .map(|r| String::from_utf8_lossy(r).into_owned());
+    let mut mode = mode;
+    if rootcert.as_deref() == Some("system") {
+        if options.sslmode.is_none() {
+            mode = SslMode::VerifyFull;
+        } else if mode != SslMode::VerifyFull {
+            return Err(format!(
+                "weak sslmode \"{}\" may not be used with sslrootcert=system (use \"verify-full\")",
+                String::from_utf8_lossy(options.sslmode.as_deref().unwrap_or_default())
+            ));
+        }
+    }
+    let file = rootcert
+        .filter(|r| r != "system")
+        .map(std::path::PathBuf::from);
+    let verify = match mode {
+        SslMode::VerifyCa | SslMode::VerifyFull => tls::Verify {
+            check: if mode == SslMode::VerifyCa {
+                tls::Check::Chain
+            } else {
+                tls::Check::Full
+            },
+            roots: file.map_or(tls::Roots::Builtin, tls::Roots::File),
+        },
+        _ => match file.filter(|f| f.exists()) {
+            Some(f) => tls::Verify {
+                check: tls::Check::Chain,
+                roots: tls::Roots::File(f),
+            },
+            None => tls::Verify {
+                check: tls::Check::Nothing,
+                roots: tls::Roots::Builtin,
+            },
+        },
     };
     let timeout = match &options.connect_timeout {
         Some(v) => conninfo::int_param(v, "connect_timeout")?,
@@ -546,7 +599,7 @@ pub(crate) fn connect(options: &Options) -> Result<Link, String> {
             deadline,
         };
         errors.push_str(&shown);
-        match attempt(&target, mode, &plan, &mut errors) {
+        match attempt(&target, mode, &verify, &plan, &shown, &mut errors) {
             Ok(link) => return Ok(link),
             Err(why) => {
                 errors.push_str(&why);
@@ -558,47 +611,48 @@ pub(crate) fn connect(options: &Options) -> Result<Link, String> {
 }
 
 /// One address, with the retries that the `sslmode` allows; what went wrong in a try that is
-/// followed by another goes into `errors`.
+/// followed by another goes into `errors`, and the other try begins with `shown` once more, as
+/// libpq names the server before each.
 fn attempt(
     target: &Target,
     mode: SslMode,
+    verify: &tls::Verify,
     plan: &Plan,
+    shown: &str,
     errors: &mut String,
 ) -> Result<Link, String> {
-    let check = match mode {
-        SslMode::VerifyCa => tls::Check::Chain,
-        SslMode::VerifyFull => tls::Check::Full,
-        _ => tls::Check::Nothing,
+    let mut again = |r: &Refusal| {
+        errors.push_str(&r.message);
+        errors.push('\n');
+        errors.push_str(shown);
     };
     match mode {
         SslMode::Disable => start(target, None, plan).map_err(|r| r.message),
         SslMode::Allow => match start(target, None, plan) {
             Ok(link) => Ok(link),
             Err(r) if r.by_server => {
-                errors.push_str(&r.message);
-                errors.push('\n');
-                start(target, Some((check, false)), plan).map_err(|r| r.message)
+                again(&r);
+                start(target, Some((verify, true)), plan).map_err(|r| r.message)
             }
             Err(r) => Err(r.message),
         },
-        SslMode::Prefer => match start(target, Some((check, false)), plan) {
+        SslMode::Prefer => match start(target, Some((verify, false)), plan) {
             Ok(link) => Ok(link),
-            Err(r) if !r.by_server && r.message.starts_with("SSL") => {
-                errors.push_str(&r.message);
-                errors.push('\n');
+            Err(r) if r.negotiation || (r.by_server && r.encrypted) => {
+                again(&r);
                 start(target, None, plan).map_err(|r| r.message)
             }
             Err(r) => Err(r.message),
         },
         SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull => {
-            start(target, Some((check, true)), plan).map_err(|r| r.message)
+            start(target, Some((verify, true)), plan).map_err(|r| r.message)
         }
     }
 }
 
 /// Opens the socket, negotiates encryption if `tls` says so (how much to check, and whether
 /// it is required), and goes through the start-up of a session.
-fn start(target: &Target, tls: Option<(tls::Check, bool)>, plan: &Plan) -> Result<Link, Refusal> {
+fn start(target: &Target, tls: Option<(&tls::Verify, bool)>, plan: &Plan) -> Result<Link, Refusal> {
     let stream = match target {
         Target::Tcp(addr) => {
             let left = plan.remaining()?;
@@ -622,7 +676,7 @@ fn start(target: &Target, tls: Option<(tls::Check, bool)>, plan: &Plan) -> Resul
                 .map_err(|e| os_text(&e))?;
             match tls {
                 None => Stream::Tcp(socket),
-                Some((check, required)) => negotiate(socket, addr.ip(), check, required, plan)?,
+                Some((verify, required)) => negotiate(socket, addr.ip(), verify, required, plan)?,
             }
         }
         #[cfg(unix)]
@@ -647,7 +701,8 @@ fn start(target: &Target, tls: Option<(tls::Check, bool)>, plan: &Plan) -> Resul
         std_strings: true,
         open: false,
     };
-    link.startup(plan)?;
+    let encrypted = matches!(link.stream, Stream::Tls(_));
+    link.startup(plan).map_err(|r| Refusal { encrypted, ..r })?;
     link.deadline = None;
     link.stream.set_timeout(None).map_err(|e| os_text(&e))?;
     link.open = true;
@@ -659,7 +714,7 @@ fn start(target: &Target, tls: Option<(tls::Check, bool)>, plan: &Plan) -> Resul
 fn negotiate(
     mut socket: TcpStream,
     ip: IpAddr,
-    check: tls::Check,
+    verify: &tls::Verify,
     required: bool,
     plan: &Plan,
 ) -> Result<Stream, Refusal> {
@@ -680,7 +735,11 @@ fn negotiate(
             socket
                 .set_read_timeout(plan.remaining()?)
                 .map_err(|e| os_text(&e))?;
-            let tls = tls::handshake(socket, &plan.host, ip, check)?;
+            let tls =
+                tls::handshake(socket, &plan.host, ip, verify).map_err(|message| Refusal {
+                    negotiation: true,
+                    ..Refusal::from(message)
+                })?;
             Ok(Stream::Tls(Box::new(tls)))
         }
         b'N' if required => Err(Refusal::from(
@@ -707,7 +766,9 @@ fn send_error(e: &io::Error) -> String {
 
 fn receive_error(e: &io::Error) -> String {
     match e.kind() {
-        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => CLOSED.into(),
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::UnexpectedEof => CLOSED.into(),
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => "timeout expired".into(),
         _ => format!("could not receive data from server: {}", os_text(e)),
     }
@@ -755,6 +816,23 @@ impl Link {
                         b'W' => {
                             let _ = self.input.split_to(len + 1);
                             return Ok(In::CopyBoth);
+                        }
+                        b'R' if len >= 8 => {
+                            let code = u32::from_be_bytes([
+                                self.input[5],
+                                self.input[6],
+                                self.input[7],
+                                self.input[8],
+                            ]);
+                            if !AUTHENTICATIONS.contains(&code) {
+                                let _ = self.input.split_to(len + 1);
+                                return Ok(In::Authentication(code));
+                            }
+                            match Message::parse(&mut self.input) {
+                                Ok(Some(m)) => return Ok(In::Msg(m)),
+                                Ok(None) => {}
+                                Err(_) => return Err(desync(tag, len)),
+                            }
                         }
                         _ => match Message::parse(&mut self.input) {
                             Ok(Some(m)) => return Ok(In::Msg(m)),
@@ -884,10 +962,17 @@ impl Link {
                     return Err(Refusal {
                         message: lossy(&text::message(&fields, None, self.encoding, true)),
                         by_server: true,
+                        encrypted: false,
+                        negotiation: false,
                     });
                 }
                 In::Msg(Message::NoticeResponse(_)) => {}
                 In::Msg(m @ Message::ParameterStatus(_)) => self.note_status(&m),
+                In::Authentication(code) => {
+                    return Err(Refusal::from(format!(
+                        "authentication method {code} not supported"
+                    )));
+                }
                 _ => {
                     return Err(Refusal::from(
                         "expected authentication request from server, but received another message"
@@ -906,7 +991,9 @@ impl Link {
                     let fields = fields_of(body.fields());
                     return Err(Refusal {
                         message: lossy(&text::message(&fields, None, self.encoding, true)),
-                        by_server: true,
+                        by_server: false,
+                        encrypted: false,
+                        negotiation: false,
                     });
                 }
                 In::Msg(m @ Message::ParameterStatus(_)) => self.note_status(&m),
@@ -1013,8 +1100,18 @@ impl Link {
                 }
                 In::Msg(Message::DataRow(row)) => {
                     if let Some(set) = current.as_mut() {
+                        if !well_formed(&row, set.columns.len()) {
+                            out.lose(&desync(b'D', row.buffer().len() + 6));
+                            self.open = false;
+                            break;
+                        }
                         set.rows.push(row);
                     }
+                }
+                In::Authentication(code) => {
+                    out.lose(&format!("authentication method {code} not supported"));
+                    self.open = false;
+                    break;
                 }
                 In::Msg(Message::CommandComplete(body)) => {
                     let mut set = current.take().unwrap_or_default();
@@ -1060,6 +1157,19 @@ impl Link {
             }
         }
         out.conclude()
+    }
+}
+
+/// Whether the fields of a row lie within its message, and are as many as the columns.
+fn well_formed(row: &DataRowBody, columns: usize) -> bool {
+    let mut ranges = row.ranges();
+    let mut count = 0;
+    loop {
+        match ranges.next() {
+            Ok(Some(_)) => count += 1,
+            Ok(None) => return count == columns,
+            Err(_) => return false,
+        }
     }
 }
 

@@ -14,7 +14,8 @@
 //! the runtime runs every turn and which Flux's adapter calls while it waits. A synchronous
 //! query returns what its "success" or "error" listeners would get, and calls its "notice"
 //! listeners before it returns. Listeners are called in the order they were added, those added
-//! with `once` last, each in a protected call; an error in one is printed with `ErrorNoHalt`.
+//! with `once` last, each in a protected call; an error in one is reported as one in a timer or
+//! a hook is, so that the task fails, and the others are called all the same.
 //!
 //! Not implemented, and an error that says so: `listen`, `unlisten`, `cancel`, `activate`,
 //! `deactivate`, and reconnecting a connection that was lost (what needs the server fails as
@@ -35,7 +36,7 @@ use std::rc::Rc;
 
 use nl::mlua::{self, AnyUserData, Function, Lua, MultiValue, Table, UserData, Value};
 
-use crate::runtime::{CLevel, function, lua_error, state, truthy};
+use crate::runtime::{Failure, function, lua_error, protected_call, state, truthy, type_name};
 
 use session::Session;
 use text::Field;
@@ -451,8 +452,9 @@ fn listeners_of(store: &Table, field: &str, event: &str) -> mlua::Result<Vec<Val
 }
 
 /// Calls the listeners of the event on the object, those added with `once` last and then
-/// forgotten. Each is called in a protected call, and an error in one is printed with
-/// `ErrorNoHalt`; looking that up is not protected, as in the module.
+/// forgotten. Each is called in a protected call, and an error in one does not keep the others
+/// from being called: it is reported as the runtime reports an error in a timer or a hook,
+/// which makes the task that it happens in fail.
 fn call_listeners(
     lua: &Lua,
     target: &AnyUserData,
@@ -469,25 +471,18 @@ fn call_listeners(
     {
         by_event.raw_set(event, Value::Nil)?;
     }
-    let m = module(lua)?;
     for f in always.into_iter().chain(once) {
-        let mut call: MultiValue = std::iter::once(f).collect();
-        call.extend(args.iter().cloned());
-        let error = match CLevel::enter() {
-            Some(_level) => {
-                let mut r = m.protect.call::<MultiValue>(call)?;
-                match r.pop_front() {
-                    Some(Value::Boolean(true)) => None,
-                    _ => Some(r.pop_front().unwrap_or(Value::Nil)),
-                }
+        let result = match &f {
+            Value::Function(f) => {
+                protected_call(lua, f, args.iter().cloned().collect()).map(|_| ())
             }
-            None => Some(Value::String(lua.create_string("stack overflow")?)),
+            other => Err(Failure::plain(format!(
+                "attempt to call a {} value",
+                type_name(other)
+            ))),
         };
-        if let Some(e) = error {
-            let print: Value = lua.globals().get("ErrorNoHalt")?;
-            if let Value::Function(print) = print {
-                let _ = m.protect.call::<MultiValue>((print, e, "\n"));
-            }
+        if let Err(failure) = result {
+            state(lua).report(&failure);
         }
     }
     Ok(())

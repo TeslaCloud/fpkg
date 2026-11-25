@@ -405,3 +405,83 @@ fn help_names_the_task_commands() {
     let o = ok(env.fpkg_in(&env.root, &["tasks", "--help"]));
     assert!(stdout(&o).contains("--all"), "{}", text(&o));
 }
+
+/// A PostgreSQL server that lets anyone in and answers every query with no rows, enough for the
+/// pg module to deliver the "success" of a query.
+fn quiet_postgres() -> u16 {
+    use std::io::{Read, Write};
+
+    fn put(tag: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        out.extend_from_slice(&(body.len() as u32 + 4).to_be_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn serve(mut s: std::net::TcpStream) -> Option<()> {
+        let mut len = [0u8; 4];
+        s.read_exact(&mut len).ok()?;
+        let mut startup = vec![0u8; (u32::from_be_bytes(len) as usize).checked_sub(4)?];
+        s.read_exact(&mut startup).ok()?;
+        let mut out = put(b'R', &0u32.to_be_bytes());
+        out.extend(put(b'Z', b"I"));
+        s.write_all(&out).ok()?;
+        loop {
+            let mut head = [0u8; 5];
+            s.read_exact(&mut head).ok()?;
+            let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+            let mut body = vec![0u8; len.checked_sub(4)?];
+            s.read_exact(&mut body).ok()?;
+            if head[0] == b'Q' {
+                let mut out = put(b'C', b"SELECT 0\0");
+                out.extend(put(b'Z', b"I"));
+                s.write_all(&out).ok()?;
+            }
+        }
+    }
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in listener.incoming().flatten() {
+            std::thread::spawn(move || serve(s));
+        }
+    });
+    port
+}
+
+#[test]
+fn an_error_in_a_listener_of_the_pg_module_fails_the_task() {
+    let env = Env::new();
+    let p = env.root.join("pgtask");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(
+        p.join("pgtask.txt"),
+        "\"pgtask\"\n{\n\t\"base\"\t\t\"base\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("packagespec.lua"),
+        "Package:describe(function(s)\n  s.name = 'PG task'\n  s.version = '0.1.0'\n  s.date = '2026-11-25'\n  s.summary = 'A listener that fails.'\n  s.license = 'MIT'\nend)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("taskspec.lua"),
+        format!(
+            "task('listener', function()\n  require('pg')\n  local db = pg.new_connection()\n  assert(db:connect('127.0.0.1', 'u', 'p', 'd', {}, 'sslmode=disable'))\n  local q = db:query('select 1')\n  q:on('success', function() error('listener failure') end)\n  q:on('success', function() print('second listener') end)\n  q:run()\nend)\n",
+            quiet_postgres()
+        ),
+    )
+    .unwrap();
+    let o = code(env.fpkg(&p, &["listener"]), 1);
+    assert_eq!(stdout(&o), "second listener\n", "{}", text(&o));
+    let e = stderr(&o);
+    assert!(
+        e.starts_with("[ERROR] gamemodes/pgtask/taskspec.lua:6: listener failure\n"),
+        "{e}"
+    );
+    assert!(
+        e.ends_with("error: the task finished, but 1 Lua error was reported\n"),
+        "{e}"
+    );
+}

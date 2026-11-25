@@ -16,6 +16,7 @@ postgres = [
     "dep:fallible-iterator",
     "dep:postgres-protocol",
     "dep:rustls",
+    "dep:rustls-webpki",
     "dep:webpki-roots",
 ]
 
@@ -34,10 +35,14 @@ postgres-protocol = { version = "0.6.12", optional = true }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # With the features ureq enables, so that the tree keeps one rustls on ring.
 rustls = { version = "0.23.46", default-features = false, features = ["logging", "ring", "std", "tls12"], optional = true }
+# rustls's own webpki, for the names and the dates of a certificate that is its own root.
+rustls-webpki = { version = "0.103.17", default-features = false, features = ["alloc"], optional = true }
 sha1 = "0.11.0"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 webpki-roots = { version = "1.0.10", default-features = false, optional = true }
 
 [dev-dependencies]
+# The throwaway authorities and certificates of the fake TLS servers in the tests, made on ring.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 tempfile = "3.27.0"

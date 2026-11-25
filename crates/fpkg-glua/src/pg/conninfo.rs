@@ -4,9 +4,10 @@
 //! occurrence of a key winning.
 //!
 //! The keys this module acts on are `host`, `hostaddr`, `port`, `dbname`, `user`,
-//! `password`, `sslmode`, `connect_timeout`, `application_name` and `options`. Another key that
-//! libpq knows is an error that says this module does not implement it, and one that libpq does
-//! not know is libpq's error.
+//! `password`, `sslmode`, `sslrootcert`, `connect_timeout`, `application_name` and `options`,
+//! and `requiressl`, which libpq still takes as `sslmode`: `require` for a value that starts with
+//! `1`, `prefer` for any other. Another key that libpq knows is an error that says this module
+//! does not implement it, and one that libpq does not know is libpq's error.
 
 /// What the connection string sets.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -18,6 +19,7 @@ pub(crate) struct Options {
     pub user: Option<Vec<u8>>,
     pub password: Option<Vec<u8>>,
     pub sslmode: Option<Vec<u8>>,
+    pub sslrootcert: Option<Vec<u8>>,
     pub connect_timeout: Option<Vec<u8>>,
     pub application_name: Option<Vec<u8>>,
     pub options: Option<Vec<u8>>,
@@ -42,7 +44,6 @@ const LIBPQ_ONLY: &[&str] = &[
     "sslcertmode",
     "sslpassword",
     "sslkeylogfile",
-    "sslrootcert",
     "sslcrl",
     "sslcrldir",
     "sslsni",
@@ -65,7 +66,6 @@ const LIBPQ_ONLY: &[&str] = &[
     "oauth_client_id",
     "oauth_client_secret",
     "oauth_scope",
-    "requiressl",
 ];
 
 /// C's `isspace` in the C locale.
@@ -149,6 +149,15 @@ pub(crate) fn parse(text: &[u8]) -> Result<Options, String> {
 }
 
 fn store(options: &mut Options, name: &str, value: Vec<u8>) -> Result<(), String> {
+    if name == "requiressl" {
+        let mode = if value.first() == Some(&b'1') {
+            "require"
+        } else {
+            "prefer"
+        };
+        options.sslmode = Some(mode.as_bytes().to_vec());
+        return Ok(());
+    }
     let slot = match name {
         "host" => &mut options.host,
         "hostaddr" => &mut options.hostaddr,
@@ -157,6 +166,7 @@ fn store(options: &mut Options, name: &str, value: Vec<u8>) -> Result<(), String
         "user" => &mut options.user,
         "password" => &mut options.password,
         "sslmode" => &mut options.sslmode,
+        "sslrootcert" => &mut options.sslrootcert,
         "connect_timeout" => &mut options.connect_timeout,
         "application_name" => &mut options.application_name,
         "options" => &mut options.options,
