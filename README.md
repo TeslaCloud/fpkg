@@ -518,20 +518,37 @@ go as text: a whole number within the 64-bit range is sent as an integer, boolea
 NULL come back as Lua's, whole numbers beyond 2^53 as strings. Errors read as libpq writes them
 (`ERROR:  relation "x" does not exist`, the `LINE 1:` cursor, `DETAIL:`, `HINT:`), with their
 fields in `details`. A query runs when `run` is called and blocks until it is over, also an
-asynchronous one; the listeners of an asynchronous one are called from the `Think` hook
-`LuaEventEmitterManager_fpkg`, at the next turn of the loop or when Flux's adapter calls that
-hook while it waits, never from inside `run`. A connection authenticates with a password in
-the clear, MD5 or SCRAM-SHA-256, or none (`trust`), and is encrypted as `sslmode` in the
-`extra` argument of `connect` says (`prefer` by default): `prefer` and `require` without
-checking the certificate, `verify-ca` and `verify-full` against the Mozilla roots fpkg carries
-(libpq's `sslrootcert=system`). `extra` takes `host`, `hostaddr`, `port`, `dbname`, `user`,
-`password`, `sslmode`, `connect_timeout` (5 seconds unless set), `application_name` and
-`options`; another key of libpq is an error that names it. Not implemented, and an error that
-says so when called: `listen`, `unlisten` and notifications, `cancel`, `activate`,
-`deactivate`, reconnecting a connection the server ended (what needs it fails as lost), several
-hosts in one connection, GSSAPI and SSPI. libpq's environment variables (`PGHOST`,
-`PGPASSWORD`, ...) and its password file are not read. A build of `fpkg-glua` without its
-`postgres` feature has no `pg`, and `require('pg')` says so.
+asynchronous one, and has no time limit of its own, as with libpq (the server's
+`statement_timeout` applies); the listeners of an asynchronous one are called from the `Think`
+hook `LuaEventEmitterManager_fpkg`, at the next turn of the loop or when Flux's adapter calls
+that hook while it waits, never from inside `run`. An error in a listener does not keep the
+others from being called, and is reported as one in a timer or a hook is, so the task fails.
+`escape`, `quote` and `quote_name` of text that is not plain ASCII raise an error when the
+client encoding is a multibyte one other than UTF-8 (`EUC_JP`, `SJIS`, ...). A connection
+authenticates with a password in the clear, MD5 or SCRAM-SHA-256, or none (`trust`); it goes
+over TCP, or a Unix-domain socket for a `host` that starts with `/` (not on Windows). It is
+encrypted as `sslmode` in the `extra` argument of `connect` says, `prefer` by default, with
+libpq's retries: `allow` tries in the clear first and with TLS when the server says no,
+`prefer` the other way around. `prefer`, `allow` and `require` do not check the server's
+certificate, unless `sslrootcert` names a file that exists, whose chain they then check as
+libpq does; `verify-ca` checks the chain and `verify-full` the host name too, against the
+certificates of the `sslrootcert` file (PEM), which may hold the server's own self-signed
+certificate. The host name is looked for in the certificate's subjectAltName only: one with
+just a common name fails `verify-full` with a message that says so, where libpq would fall
+back to the common name (reissue it with a subjectAltName, or use `verify-ca`). Without
+`sslrootcert` both check against the
+Mozilla roots that fpkg carries, where libpq would want `~/.postgresql/root.crt`;
+`sslrootcert=system` means those roots, goes with `verify-full` only and makes it the default,
+as in libpq. `extra` takes `host`, `hostaddr`, `port`, `dbname`, `user`, `password`,
+`sslmode`, `sslrootcert`, `requiressl` (`sslmode=require` for `1`), `connect_timeout` (5
+seconds unless set), `application_name` and `options`; another key of libpq is an error that
+names it. The user is `postgres` unless `connect` or `extra` names one, as in gmsv_pg; libpq's
+fallback to the name of the system's user (for an empty `user` in `extra`) is not applied. Not
+implemented, and an error that says so when called: `listen`, `unlisten` and notifications,
+`cancel`, `activate`, `deactivate`, reconnecting a connection the server ended (what needs it
+fails as lost), several hosts in one connection, GSSAPI and SSPI. libpq's environment
+variables (`PGHOST`, `PGPASSWORD`, ...) and its password file are not read. A build of
+`fpkg-glua` without its `postgres` feature has no `pg`, and `require('pg')` says so.
 
 **The virtual tree.** The runtime maps the game's paths onto disk. Inside a server
 (`<server>/garrysmod/gamemodes/<schema>`, or with `--server <dir>`), `garrysmod/` is the
