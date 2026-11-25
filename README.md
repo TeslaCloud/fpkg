@@ -6,15 +6,18 @@ LuaJIT, in its sandbox), validates packages, packs them into byte-for-byte repro
 zip archives, resolves and locks dependencies with version constraints, installs
 packages from a registry into `packages/`, verifies them against the lockfile, and
 publishes them to the registry at `fluxpkg.dev`. It also links local checkouts in place
-of registry packages and copies the packages' game content and binary modules into a
-Garry's Mod server.
+of registry packages, copies the packages' game content and binary modules into a
+Garry's Mod server, and runs the tasks the packages define (`fpkg db:migrate`) in a
+Garry's Mod server-side Lua runtime of its own, without starting the game.
 
 | Path | What it is |
 | --- | --- |
-| `crates/fpkg-core` | The library: spec evaluation, versions, archives, lockfile, resolver, registries, install/verify |
+| `crates/fpkg-core` | The library: spec evaluation, versions, archives, lockfile, resolver, registries, install/verify, tasks |
+| `crates/fpkg-glua` | The task runtime: a Garry's Mod server-side Lua environment without the game |
 | `crates/fpkg` | The `fpkg` command line tool |
 | `crates/fpkg/templates` | The files `fpkg new` writes, embedded into the binary, with `{{id}}`-style placeholders |
 | `tests/fixtures/flux-ce` | The 17 `packagespec.lua` files of flux-ce (the root one is the package `flux`) with stand-in files, used by every test |
+| `tests/fixtures/tasks` | A gamemode project with task files in itself and in a package, for the e2e tests of tasks |
 | `tests/conformance` | The registry conformance suite |
 | `tests/sandbox` | Hostile specs against the process evaluator |
 | `tests/e2e` | End-to-end tests of the CLI |
@@ -179,6 +182,10 @@ Constraints are `1.2.3` / `== 1.2.3`, `>= 1.2`, `~> 1.2` (`< 2.0.0`), `~> 1.2.3`
 the same X.Y.Z (`>= 2.0.0-alpha`); `*` picks one only when the package has no release.
 A dependency that names a directory (`s.depends '../shared/foo'`) is a path package.
 
+Next to its `packagespec.lua`, a package (and the project itself) may have a `taskspec.lua`
+with the tasks it offers (see [Tasks](#tasks)). It is packed and installed with the package
+like any other file.
+
 Specs are evaluated in a child process each (`fpkg __eval-spec`), in the nl sandbox,
 with a budget of one million instructions, 2 s of CPU, 512 MiB of memory, 5 s of wall
 clock and 1 MiB of output, so a spec that loops, recurses or allocates without bound
@@ -202,8 +209,9 @@ default):
   Flux is not installed or the server runs the stock `lua_shared`, which cannot run Flux),
   `<name>.yml` (the `roleplay` profile, the development plugins, two config values and
   commented-out `depends` and `exclude` lists), a README, a `.gitignore` that leaves out the
-  installed packages, the local config and `target/`, an empty `config/` that Git keeps with
-  its `.gitkeep`, a `.proofreader.yml` with the LuaJIT 3.0 style readers of Flux, a
+  installed packages, the local config, `target/` and the task runtime's `.fpkg/garrysmod/`,
+  an empty `config/` that Git keeps with its `.gitkeep`, a `.proofreader.yml` with the
+  LuaJIT 3.0 style readers of Flux, a
   working `schema/` folder (the main file, a client and a server hook, a citizen faction,
   the English phrases and a theme), and the container setup: a `Dockerfile` that bakes
   the checkout with its installed packages into a dedicated server image, a
@@ -320,6 +328,209 @@ archive is `<id>/...` with the root directory minus `packages/`, `fpkg.lock`, `.
 `target/` and the fixed exclusions, honoring the root `.fpkgignore`. `publish --all`
 publishes it last, after the workspace packages.
 
+### Tasks
+
+A task is Lua that fpkg runs on its own, without a game server: migrating the database,
+generating a file, anything a package wants to offer from the command line, after Rake and
+`bin/rails db:migrate`.
+
+```sh
+fpkg tasks                       # the tasks of the project, with their descriptions
+fpkg tasks db:migrate            # one task, with what it needs (its prerequisites)
+fpkg db:migrate                  # the same as fpkg run db:migrate
+fpkg db:rollback STEP=2
+fpkg run generate migration AddRoleToUsers role:string
+fpkg --env development db:migrate:status
+fpkg -v db:migrate               # with the Lua stack of an error
+```
+
+These examples are what Flux's own task files are meant to offer; until the packages of a
+project ship `taskspec.lua` files, `fpkg tasks` says there are none.
+
+**Task files.** Any package of the project, and the project itself, may have a
+`taskspec.lua` next to its `packagespec.lua`. The project's tasks are those of every file,
+loaded in the order Flux includes the packages: depth first along the `s.depends` of each
+manifest, in the order they are written, each package after its dependencies, the project's
+own file last (`fpkg -v tasks` prints that order). A later file can therefore add
+prerequisites and actions to the task of an earlier one. Only the packages the project's
+`s.depends` reach are loaded, as Flux loads them: the dependencies of a package marked
+`s.clientside` are not followed, a nested package (`packages/<outer>/packages/<id>`) is found
+only once `<outer>` has been reached, a cycle is the error `fpkg install` gives, and a
+package that is in `packages/` but used by nothing is left out, even when its spec is broken.
+A dependency the server would not find (not in `packages/`, nested in a package not reached
+yet, or copied in by hand where the lock has a registry package) is named in a warning, and
+its tasks are missing. The specs are read as production unless `--env` is given, so a
+package a spec adds only `if IS_DEVELOPMENT` is there with `--env development`. A task file
+is code of the project, as trusted as the Lua the server runs: it is not sandboxed.
+
+```lua
+--- Database tasks of ActiveRecord.
+
+local spec = TASKSPEC
+
+namespace('db', function()
+  desc 'Run the pending migrations, or migrate to VERSION=x'
+  task('migrate', { 'environment' }, function(args)
+    ActiveRecord.Tasks.run('migrate', args.options)
+  end)
+
+  namespace('migrate', function()
+    desc 'List the migrations and whether they have been run'
+    task('status', { 'environment' }, function() ActiveRecord.Tasks.run('migrate:status') end)
+  end)
+end)
+
+desc 'Boot Flux far enough to use the database'
+task('environment', function()
+  include(spec.path..'lib/boot.lua')
+end)
+```
+
+- `namespace(name, fn)` prefixes the tasks defined in `fn` with `name:`; namespaces nest.
+- `desc(text)` describes the next task (`desc(nil)` takes a description back). A task
+  without a description runs all the same but is listed only by `fpkg tasks --all`.
+- `task(name, [prerequisites], [fn])` defines a task, or, when it exists, adds prerequisites
+  and an action to it; actions run in the order they were defined. Prerequisites are full
+  task names (`'environment'`, `'db:load_config'`), or relative to the namespace when they
+  start with `:`; a single one may be a string. Names have no blanks and no `=`, do not
+  start with `-` and neither start nor end with `:`, so that no name reads as a flag or an
+  option.
+- Every task runs at most once per fpkg invocation, its prerequisites first, in order. A
+  cycle of prerequisites is an error that names it (`a -> b -> a`), and so is a task that
+  invokes a task that is still running, and a prerequisite that no file defines (which
+  `fpkg tasks` and `fpkg check` also warn about).
+- An action receives `args`: `args.options` holds the `KEY=VALUE` words (keys of letters,
+  digits and underscores, upper-cased; values are strings), `args.words` the other words in
+  order, `args.name` the task's full name. Prerequisites get the same options and words.
+- `Tasks.invoke(name, args)` runs a task (and its prerequisites, once) from Lua, with
+  `args = { options = ..., words = ... }`; `Tasks.exists(name)` tells whether it is defined.
+  A name that starts with `:` is relative to the namespace of the task that is running,
+  inside a coroutine too. A failure that a `pcall` catches, or a coroutine left suspended in
+  the middle of a task, leaves nothing behind: the task can be invoked again.
+- A task fails by raising an error (`error('message', 0)`, or any Lua error): fpkg prints the
+  message and exits 1; `fpkg -v <task>` prints the Lua stack under it, which a second line
+  points to for an error raised at a line (not for a deliberate `error('message', 0)`). A
+  task also fails (exit 1, `the task finished, but 1 Lua error was reported`) when an
+  uncaught Lua error was reported while it ran or while what was due afterwards was
+  delivered: an error in a timer, a hook or a callback, a file `include` could not run.
+  `ErrorNoHalt` is a message, not a failure. A task that returns without either succeeds.
+- While its file runs, `TASKSPEC` is `{ id = <package id>, path = <its LUA path> }`
+  (`hl2rp/packages/flux/packages/active_record/`); an action that includes a file of its
+  package later captures it in a local: `include(spec.path..'lib/x.lua')`. A path package
+  (`s.depends '../shared/x'`) is reached at its path in a stand-alone checkout too.
+- `fpkg` holds what the host knows: `fpkg.version`, `fpkg.project` (`{ id, gamemode, path }`,
+  `gamemode` being whether the project is a gamemode and `path` `<id>/`), `fpkg.packages`
+  (`{ id, path, version }` in load order), `fpkg.env` (the `--env` value when the flag is
+  given, else nil: what it means is up to the task files), `fpkg.server` (whether the project
+  is in a server tree), `fpkg.wait_until(fn, seconds)` (turns the loop until `fn()` returns a
+  true value; false when `seconds` pass first; without `seconds` it waits as long as it
+  takes; what `fn` raises goes on as it is) and `fpkg.exit(code)` (ends fpkg at once with
+  `code`, a whole number from 0 to 255; anything else is an error).
+
+**Commands.** `fpkg tasks [--all] [PATTERN]` lists the tasks whose name contains `PATTERN`,
+sorted, with their descriptions; for the exact name of a task it also shows what the task
+needs, on a second line (`needs: environment, db:setup`). `--json` gives name, description,
+prerequisites, package and number of actions of each. Standard output is only the listing:
+what the task files print while they load goes to standard error. `fpkg run <task>
+[words...]` runs one task. Every word after the task's name is the task's, flags included,
+in `fpkg run` and in the shorthand alike; fpkg's own flags go before the task's name (`fpkg
+-v run db:migrate`, `fpkg --env test db:version`). A first word that is not one of fpkg's
+commands is tried as a task (`fpkg db:migrate STEP=2`); fpkg's own commands always win, and
+trying costs nothing visible: when the word is not a task, or the task files do not load,
+the result is the usual "unrecognized subcommand" error with clap's suggestion among the
+commands and the nearest task, nothing is printed by the task files, no warning is given and
+nothing is written to disk (a line `note: the project's task files could not be loaded: ...`
+says why the task files did not load; outside a project, that tasks need one). Exit codes:
+`0` the task succeeded, `1` it (or loading a task file) failed, `2` an unknown task or a
+usage error. `fpkg check` reports a `taskspec.lua` that does not compile or fails to load,
+and warns about prerequisites that name no task.
+
+**The runtime.** Tasks run on the VM the server runs (the nl fork of LuaJIT with the GLua
+syntax and LuaJIT 3.0's extensions), in one state with what a server state has:
+
+- the engine functions, in Rust: `include` (next to the file that is running, then from the
+  roots of `LUA`; a missing, empty, broken or failing file is reported as the game reports
+  Lua errors, and the including file goes on), `CompileString`, `RunString`, `CompileFile`,
+  `AddCSLuaFile` (which does nothing), `print`, `Msg`, `MsgN`, `MsgC` (colors when standard
+  output is a terminal), `ErrorNoHalt`, `ErrorNoHaltWithStack`, the clocks (`SysTime`,
+  `CurTime` and `RealTime` count seconds since the runtime started, `FrameTime` and
+  `engine.TickInterval` are the game's 0.015), `engine.ActiveGamemode`, `file.*`, the engine
+  half of `util` (`CRC` as the game's CRC-32, `TableToJSON` and `JSONToTable` as the game
+  writes and reads JSON, `KeyValuesToTable` and `TableToKeyValues`, `MD5`, `SHA1`,
+  `SHA256`, Base64, `SteamIDTo64`), `timer.*` and `sql.*` on SQLite (the game's result
+  shapes: strings and `"NULL"` from `sql.Query`, typed values without the NULL columns from
+  `sql.QueryTyped`, `nil` for no rows, `false` and `sql.LastError()` on an error). Their
+  errors are strings, as the game's are: `pcall(file.Exists)` gives `bad argument #1 to '?'
+  (string expected, got no value)`;
+- the game's stock Lua, written for fpkg from its documented behavior: the `string`, `table`
+  and `math` extensions (with `math.ease`), the helpers of `util.lua` (`isstring`, `IsValid`,
+  `tobool`, `Format`, `Lerp`, `PrintTable`, `SortedPairs`, `type` naming the engine's
+  classes, ...), `Color` and its conversions, `hook`, `concommand`, convars and `cvars`,
+  `utf8`, `baseclass`, `weapons` and `scripted_ents`;
+- `require`, which finds the modules the game loads at startup, the built-in binary modules
+  (`file`, gmsv_file's `File`; `pg` and `mysqloo` are not available yet and say so), and Lua
+  modules in `includes/modules/`;
+- harmless stand-ins where a server would talk to clients: `net` sends to nobody,
+  `util.AddNetworkString` numbers the names, `resource.*` records nothing, the player list is
+  empty, `RunConsoleCommand` runs Lua console commands and sets convars;
+- `SERVER` is true, `CLIENT` and `MENU_DLL` false; `io`, `loadstring` and the `os` functions
+  that reach the system are gone, as on a server; `debug` and `jit` are there.
+
+What it does not emulate: entities, players, maps, physics, `Vector`, `Angle`, networking,
+HTTP and the rest of the game. Every name of the server API it leaves out is a function that
+fails with "fpkg's runtime does not implement util.TraceLine" when it is called, and every
+library of the server API exists, so that code which only stores such a function at load
+time still loads. `game.GetMap()` fails too ("fpkg's runtime has no map"), and so does
+`util.IsValidModel`: an empty map name or a model that is never valid would make data be
+read or written under the wrong key. Nothing runs between calls: the loop turns in
+`fpkg.wait_until`, and once the task returns, until what is due then has run (zero-delay
+timers, callbacks), without waiting for later timers. Each turn runs what was posted from
+other threads, the timers due when it began and `hook.Run('Think')`. A timer still exists
+during its last run, with 0 repetitions left, and `timer.Adjust` with repetitions there
+keeps it; one whose function raises an error is removed and the error reported once. The
+calls from fpkg's Rust code into Lua that can nest without bound (`include`, `RunString`,
+`CompileFile` runs, `require` of a Lua module, the loop's timers and hooks, the `tostring`
+of `print`) nest at most 200 deep; a deeper one fails with "stack overflow" instead of
+crashing fpkg. `pcall`, `xpcall` and coroutines are LuaJIT's own, unlimited as in the game.
+
+What fpkg writes to a stream that is not a terminal (or to any while `NO_COLOR` is set) has
+its well-formed ANSI escape sequences stripped (control sequences, operating system commands
+and two-byte escapes; anything else, a lone `ESC` included, stays), so colored messages read
+cleanly in logs and CI. Each write is stripped on its own: a sequence split across two
+writes passes through.
+
+The database is SQLite opened as the game opens `sv.db`: foreign keys off (a framework that
+wants them turns them on), journal mode `delete`, text stored and read byte for byte. The
+SQLite in fpkg is newer than the game's (3.26.0), so SQL that needs a newer one (`ALTER
+TABLE ... DROP COLUMN`, `RETURNING`, `STRICT` tables, the `->>` operator) works in a task
+and fails on the server: keep migrations to what 3.26 has.
+
+**The virtual tree.** The runtime maps the game's paths onto disk. Inside a server
+(`<server>/garrysmod/gamemodes/<schema>`, or with `--server <dir>`), `garrysmod/` is the
+server's: `GAME` is `garrysmod/` with the gamemode's `content/` and the addons, `LUA`
+searches `garrysmod/lua/`, then `garrysmod/gamemodes/`, then the addons' `gamemodes/`, then
+the addons' `lua/`, `DATA` is `garrysmod/data/` and the database `garrysmod/sv.db`. A
+stand-alone checkout is `gamemodes/<schema>/` of a `garrysmod/` that lives in
+`<project>/.fpkg/garrysmod/` (`lua/`, `data/`, `sv.db`), created the first time a task
+writes there or calls `sql` (the first query opens `sv.db`, which creates it), never by
+listing or by a task that only reads files; it gets a `.gitignore` of `*`,
+so a schema needs no `.gitignore` line for it (the schema template has `/.fpkg/garrysmod/`
+all the same, so that `.fpkg/config.toml` can still be committed). `.fpkg/` itself is not
+part of the game's tree: `file.Find`, `file.Exists` and `include` do not see it. Symlinked
+packages are followed. Names are found whatever their case, as the game finds them, in every
+search path (`file.Read('Gamemodes/HL2RP/readme.md', 'GAME')` reads `README.md`): the path
+as written first, then each folder's listing (kept for the life of the process, and read
+again after the runtime writes), preferring the entry of that exact name, then the
+lower-case one; only ASCII letters are folded. `file.Find` returns names as they are on
+disk, sorted byte by byte for `nameasc` and `namedesc` and by the time of the last change
+for `dateasc` and `datedesc`; `*` matches any run of characters, ignoring ASCII case. A path component that is not a plain name (a drive such as `C:`,
+anything with a `:`) is outside the tree. Writes through `file.*` are confined to `DATA`,
+under the game's rules (lower-cased names, as the game writes `A.txt` as `a.txt`, ASCII
+names only, its list of extensions); `File.*` reads and writes anywhere under `garrysmod/`
+byte for byte as gmsv_file does, keeping the case of names (and not finding a name in
+another case) and refusing the names gmsv_file refuses (`..`, `:`, `\`, `$`, `~`, `%`, a
+leading `/`).
+
 ### Commands
 
 ```
@@ -352,6 +563,8 @@ fpkg docs <id>[@version]         print and open the docs URL
 fpkg cache clean|dir
 fpkg mirror <registry-url> <dir> copy the registry packages of this project's fpkg.lock into a file:// registry
 fpkg completions <shell>         print the completion script of bash, zsh, fish, elvish or powershell
+fpkg tasks [--all] [pattern]     the tasks of the project's taskspec.lua files, with descriptions (and prerequisites, for an exact name)
+fpkg run <task> [words...]       run a task (fpkg's flags before its name); fpkg <task> [words...] is the same
 ```
 
 `fpkg <command> --help` lists the options of a command first, then the global ones.
@@ -372,7 +585,7 @@ takes it.
 
 Global flags: `--project <dir>`, `--server <dir>`, `--registry <url>`, `--env
 production|development|test` (what `IS_DEVELOPMENT`, `IS_TEST` and `IS_PRODUCTION` say
-in the spec sandbox), `--offline` (the cache only; a `file://` registry, such as a mirror,
+in the spec sandbox, production when it is not given; tasks see it as `fpkg.env`), `--offline` (the cache only; a `file://` registry, such as a mirror,
 is still read), `--json` (machine-readable output; for several projects of a server, one
 object with a `projects` list), `-q`/`-v`, `--color auto|always|never` (stderr and stdout
 are colored when each is a terminal).
@@ -382,8 +595,8 @@ directory name of a package, and is the project id of a root without a gamemode 
 written as a plain `s.id = '<id>'` line, which fpkg reads before evaluating the spec) and
 `s.binaries` (above).
 
-Exit codes: `0` success, `1` failure, `2` usage (a bad argument or package id, no project
-where the command runs, a `--project` or `--server` that does not exist, a package id that
+Exit codes: `0` success, `1` failure (of a task too), `2` usage (a bad argument or package
+id, an unknown task, no project where the command runs, a `--project` or `--server` that does not exist, a package id that
 is not one of the project's) or a case that needs a human (an edit `fpkg add`/`remove`
 cannot make safely, an unmarked package directory that the lock has as a registry package,
 a file in `content/` or `lua/bin/` that fpkg did not write, a symlinked directory there), `3`
@@ -478,3 +691,12 @@ FPKG_TEST_REGISTRY=http://127.0.0.1:8787/ FPKG_TOKEN=fpk_... \
 ```
 
 `server/scripts/conformance.sh` does this for the Worker.
+
+`cargo test -p fpkg-glua --test gmod_compare` compares the runtime's `string`, `table`,
+`math` and `utf8` libraries with the game's own Lua on generated inputs. It is ignored unless
+run by hand on a machine with the game, `FPKG_GMOD_LUA` naming its `garrysmod/lua` folder:
+
+```sh
+FPKG_GMOD_LUA=~/.local/share/Steam/steamapps/common/GarrysMod/garrysmod/lua \
+  cargo test -p fpkg-glua --test gmod_compare -- --ignored --nocapture
+```
