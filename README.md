@@ -20,9 +20,54 @@ Garry's Mod server.
 | `tests/e2e` | End-to-end tests of the CLI |
 | `server/` | The registry, a Cloudflare Worker (its own README) |
 
-## Building
+## Installing fpkg
 
-You need Rust 1.99 and a checkout of the `nl` repository next to this one (`../nl`).
+On Linux (x86_64 or aarch64), the install script downloads the latest release, checks it against
+the release's `SHA256SUMS` and puts `fpkg` into `~/.local/bin`, or into the directory you give it.
+It says what to add to `PATH` when that directory is not in it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TeslaCloud/fpkg/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/TeslaCloud/fpkg/master/install.sh | sh -s -- /usr/local/bin
+```
+
+`FPKG_VERSION=X.Y.Z` in its environment installs that version instead.
+
+By hand, download the archive of your system from the
+[releases](https://github.com/TeslaCloud/fpkg/releases): `fpkg-X.Y.Z-linux-x86_64.tar.gz` or
+`fpkg-X.Y.Z-linux-aarch64.tar.gz` (a static binary that runs on any Linux) or
+`fpkg-X.Y.Z-windows-x86_64.zip`. Each is also there without the version in its name, so
+`https://github.com/TeslaCloud/fpkg/releases/latest/download/fpkg-linux-x86_64.tar.gz` is always
+the latest. Check it against `SHA256SUMS`, unpack it and put `fpkg` (`fpkg.exe`) into a folder in
+your `PATH`:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf fpkg-X.Y.Z-linux-x86_64.tar.gz
+install -m 755 fpkg-X.Y.Z-linux-x86_64/fpkg ~/.local/bin/
+```
+
+With Docker alone, run the image in the project or the server folder:
+
+```sh
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work ghcr.io/teslacloud/fpkg install
+```
+
+`-u` makes the files it writes yours. A user that the image knows only by its ID has no home
+folder in the container, so `fpkg login` cannot store a token there: give the token to `publish`,
+`yank` and `owner` as `-e FPKG_TOKEN=fpk_...` instead.
+
+`fpkg completions <shell>` prints the completion script of `bash`, `zsh`, `fish`, `elvish` or
+`powershell`, for example
+`fpkg completions bash > ~/.local/share/bash-completion/completions/fpkg`.
+
+fpkg is not on crates.io, since it builds against a checkout of `nl`: to build it yourself, see
+[Building from source](#building-from-source).
+
+## Building from source
+
+You need Rust 1.100 (the `rust-version` of the workspace, which the nl crates need) and a checkout
+of the `nl` repository next to this one (`../nl`).
 mlua builds LuaJIT from the `luajit-src` crate, and the workspace patches that crate
 with the nl fork, prepared once into `vendor/luajit-src/` (git-ignored):
 
@@ -45,7 +90,7 @@ statically linked, on Alpine. `.github/workflows/image.yml` publishes it once CI
 to be the version in `Cargo.toml`).
 
 ```sh
-# In a project or a server folder
+# In a project or a server folder; FPKG_TOKEN for publish, yank and owner
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work ghcr.io/teslacloud/fpkg install
 ```
 
@@ -73,7 +118,11 @@ GitHub release `vX.Y.Z` of the version in `Cargo.toml` with these files:
 | --- | --- |
 | `fpkg-X.Y.Z-linux-x86_64.tar.gz`, `fpkg-X.Y.Z-linux-aarch64.tar.gz` | The binary of the image, statically linked: it runs on any Linux |
 | `fpkg-X.Y.Z-windows-x86_64.zip` | `fpkg.exe` for 64-bit Windows, which needs no DLLs but the system's |
+| `fpkg-linux-x86_64.tar.gz`, `fpkg-linux-aarch64.tar.gz`, `fpkg-windows-x86_64.zip` | The same archives without the version in the name, for `releases/latest/download/...` links |
 | `SHA256SUMS` | The SHA-256 of each archive |
+
+`install.sh` at the root of the repository installs the Linux archive of the latest published
+release (it reads the version from the GitHub API, so a draft is not found).
 
 Running it again replaces the draft; a published release is never touched, so raise the
 version first. Publishing the draft creates the tag `vX.Y.Z`, for which the image `X.Y.Z` is
@@ -147,10 +196,14 @@ default):
 - `schema`: a gamemode project in `./<name>/` that depends on `flux` (`--flux` sets the
   constraint, `~> 0.9` by default; it is accepted for this kind only): `<name>.txt`, a
   `packagespec.lua` with a commented-out `-- s.depends 'gmsv_pg'` for servers that use
-  PostgreSQL (`fpkg add gmsv_pg` uncomments it), `gamemode/init.lua` and `cl_init.lua`,
-  which include Flux's `boot.lua`, `<name>.yml` (the `roleplay` profile, the development
-  plugins, two config values and commented-out `depends` and `exclude` lists), a README, a
-  `.gitignore` that leaves out the installed packages, a `.proofreader.yml`, a
+  PostgreSQL (`fpkg add gmsv_pg` uncomments it and drops the comment above it that says so),
+  `gamemode/init.lua` and `cl_init.lua`, which include Flux's `boot.lua` (`init.lua` is
+  written in the syntax of the stock `lua_shared` and first says in the server console when
+  Flux is not installed or the server runs the stock `lua_shared`, which cannot run Flux),
+  `<name>.yml` (the `roleplay` profile, the development plugins, two config values and
+  commented-out `depends` and `exclude` lists), a README, a `.gitignore` that leaves out the
+  installed packages, the local config and `target/`, an empty `config/` that Git keeps with
+  its `.gitkeep`, a `.proofreader.yml` with the LuaJIT 3.0 style readers of Flux, a
   working `schema/` folder (the main file, a client and a server hook, a citizen faction,
   the English phrases and a theme), and the container setup: a `Dockerfile` that bakes
   the checkout with its installed packages into a dedicated server image, a
@@ -177,8 +230,9 @@ schema `<name>.txt`, `packagespec.lua`, the two gamemode files and `schema/sh_sc
 for a package its spec and main file, for a plugin a single-file `sh_<name>.lua`, for an
 addon its spec and the autorun file. `--minimal --skip-docker` is the same.
 
-`fpkg init --project` turns an existing directory into a project (a root
-`packagespec.lua` and `packages/`), without gamemode files.
+`fpkg init [dir]` turns an existing directory (`dir`, else `--project`, else the current one)
+into a project (a root `packagespec.lua` and `packages/`), without gamemode files. It warns
+when the directory is inside another project, which then no longer finds it as its own.
 
 ### Workspace, links and nested packages
 
@@ -187,7 +241,9 @@ shadows the registry. One that has a `packages/` of its own also provides the pa
 it that have no marker either, one level deep: with flux-ce at `packages/flux`, its `packages/cable/` is the package
 `cable` at `packages/flux/packages/cable`. A top-level directory of the same id wins (a
 warning in `check`); two nested ones of the same id are an error, and the first outer
-directory in id order wins. Nested packages are never replaced or removed by `install`.
+directory in id order wins. Nested packages are never replaced or removed by `install`, and
+are locked and installed only when something depends on them (a top-level workspace package
+always is).
 
 `fpkg link <dir>` points the project at a local checkout: `packages/<id>` becomes a
 symlink to `<dir>`, which must have a `packagespec.lua`. The id is `--as`, else the
@@ -197,7 +253,10 @@ link. A symlink is always a workspace package: with flux-ce linked, a schema tha
 on `flux` resolves, locks and installs with no registry at all, and a lock that has `flux`
 from a registry is merely stale. `link` refuses to replace an installed package unless
 `--force` (which also replaces a link), and never deletes a directory that has no marker.
-`fpkg unlink <id>` removes the link; `fpkg install` then fetches the registry version.
+`fpkg unlink <id>` removes the link; `fpkg install` then fetches the registry version (or takes
+the package out of the lock when nothing depends on it). A lock written while a package was
+linked has it as a local package; `fpkg install --locked` says so once the link is gone, and
+`fpkg lock` locks the registry version instead.
 `fpkg link` lists the links. Pack and publish a linked package in its own project. On
 Windows a directory symlink needs Developer Mode or an elevated prompt.
 
@@ -219,17 +278,28 @@ After the packages are in place, `install` copies, for every package of the lock
 The server folder is known from `--server <dir>` (the server root or its `garrysmod`),
 from running inside the server folder, or because the project was reached as
 `<server>/garrysmod/gamemodes/<name>` (also through a symlinked gamemode folder). Without
-it, `install` still succeeds and lists the modules it could not place.
+it, `install` still succeeds and names the packages whose modules it could not place
+(`-v` names the files). When the server folder has its binaries, only the modules of their
+platforms are copied: `srcds_run_x64` or `bin/linux64/srcds` take `*_linux64.dll`,
+`srcds_run` or `bin/linux32/srcds` `*_linux.dll`, `srcds_win64.exe` `*_win64.dll` and
+`srcds.exe` `*_win32.dll` (a module whose name ends in no platform is always copied); in a
+folder without them, every module is. In a server folder, `install` of a project that locks
+`flux` also creates `garrysmod/lua/_flux/`, where Flux writes generated files from its first
+boot on.
 
 What was copied is recorded in `packages/.fpkg-files.toml` with its package and
-SHA-256. Each install writes missing and changed files, removes recorded files that no
-package provides any more (unless they were changed since, which it leaves in place with
-a warning) and prunes the directories that became empty. A file that is there but was not
-written by fpkg and differs is a conflict (exit 2) unless `--force`; one with the same
-content is taken over. Two packages that provide one path with different content are an
-error. `fpkg verify` checks the recorded files too. `garrysmod/lua/bin/` is shared by the
-gamemodes of a server: a module that another project there still records is left in place
-when this one stops providing it.
+SHA-256; fpkg refuses a record whose paths are not `content/<path>` or `bin/<name>`, and
+never writes or removes a file through a symlinked directory (exit 2). Each install writes
+missing and changed files, removes recorded files that no package provides any more (unless
+they were changed since, which it leaves in place with a warning) and prunes the directories
+that became empty. A file that is there but was not written by fpkg and differs is a conflict
+(exit 2) unless `--force`; one with the same content is taken over. Two packages that provide
+one path with different content are an error. `fpkg verify` checks the recorded files too,
+and fails on a file a package provides that was never copied (an install that stopped at a
+conflict). `garrysmod/lua/bin/` is shared by the gamemodes of a server: a module that another
+project there still records is left in place when this one stops providing it, and a module
+another gamemode installed with different content is a conflict that names that gamemode.
+`fpkg.lock` and the record are written with mode 0644.
 
 ### Server folders
 
@@ -257,20 +327,21 @@ fpkg new schema <name> [--minimal] [--skip-docker] [--title t] [--flux c]  a gam
 fpkg new package <name> [--minimal] [--title t]  packages/<name>/ of the project, else ./<name>/
 fpkg new plugin <name> [--minimal] [--title t]   a Flux plugin in plugins/ of the project, else ./
 fpkg new addon <name> [--minimal] [--title t]    a Garry's Mod addon in ./<name>/
-fpkg init --project              add a root packagespec.lua and packages/ to a directory
+fpkg init [dir]                  add a root packagespec.lua and packages/ to a directory
 fpkg link <dir> [--as id] [--force]     use a local checkout as packages/<id>
 fpkg link                        list the links: id, target, resolved path, version
 fpkg unlink <id>                 remove the link packages/<id>
 fpkg list                        packages in the project: id, version, source (workspace, link, link (<outer>), registry+, path+), path
 fpkg tree [id]                   dependency tree with resolved versions
-fpkg info <id>[@version]         show a manifest (local, or the registry's)
+fpkg info <id>[@version]         show a manifest (the project's package of that id, else the registry's newest; the registry's with @version)
 fpkg check [id...] [--all]       validate specs; default: the project manifest, workspace, linked, nested and path packages; --all adds installed ones
-fpkg pack [id] [-o dir] [--list] build the archive (default into target/fpkg/), print path and sha256
+fpkg pack [id] [-o dir]          build the archive (default into target/fpkg/), print path and sha256
+fpkg pack [id] --list            print the members and the sha256, write nothing
 fpkg lock                        resolve and write fpkg.lock, keeping locked versions
 fpkg update [id...]              re-resolve the given ids (or all) to the newest matching versions
-fpkg add <id>[@constraint]       add s.depends to the root packagespec.lua, lock, install
+fpkg add <id>[@constraint]       add s.depends to the root packagespec.lua (or change its constraint), lock, install
 fpkg remove <id>                 the reverse
-fpkg install [--locked] [--offline] [--force]
+fpkg install [--locked] [--offline] [--force]  write a missing or stale lock, install, copy content and modules
 fpkg verify                      installed packages and copied files match the lock and the record
 fpkg search <query> [--page n]
 fpkg publish [id] [--dry-run] [--all] [--registry url] [--yes] [--allow-missing-dependencies]
@@ -279,23 +350,43 @@ fpkg owner add|remove|list <id> [login]
 fpkg login [--registry url] / fpkg logout
 fpkg docs <id>[@version]         print and open the docs URL
 fpkg cache clean|dir
-fpkg mirror <registry-url> <dir> copy the packages fpkg.lock needs into a file:// registry
+fpkg mirror <registry-url> <dir> copy the registry packages of this project's fpkg.lock into a file:// registry
+fpkg completions <shell>         print the completion script of bash, zsh, fish, elvish or powershell
 ```
+
+`fpkg <command> --help` lists the options of a command first, then the global ones.
+
+`check` lists the packages that have problems, each with its errors and warnings, then a
+summary; `-v` lists every package, `-q` leaves out the warnings. It also warns about a package
+dependency that is not a package of the project, not in `fpkg.lock` and not on the registry
+(which it asks only about such an id, and never with `--offline`), with the nearest id it
+knows (`did you mean flux?`). A resolution that fails names the nearest id of one that does
+not exist, and the versions there are of one that a constraint finds none of.
+
+`add <id>` without a constraint writes `~> X.Y` of the newest version (of a pre-release,
+`>= X.Y.Z-pre, < (X+1).0.0`, since only a constraint that names a pre-release allows it). It
+resolves what the edited manifest evaluates to before it writes anything, and writes the
+manifest in one step. A locked registry package keeps its checksum: when the registry has
+another one for the same version, `lock`, `install` and `add` fail, and only `fpkg update <id>`
+takes it.
 
 Global flags: `--project <dir>`, `--server <dir>`, `--registry <url>`, `--env
 production|development|test` (what `IS_DEVELOPMENT`, `IS_TEST` and `IS_PRODUCTION` say
-in the spec sandbox), `--offline`, `--json` (machine-readable output; for several
-projects of a server, one object with a `projects` list), `-q`/`-v`, `--color
-auto|always|never`.
+in the spec sandbox), `--offline` (the cache only; a `file://` registry, such as a mirror,
+is still read), `--json` (machine-readable output; for several projects of a server, one
+object with a `projects` list), `-q`/`-v`, `--color auto|always|never` (stderr and stdout
+are colored when each is a terminal).
 
 Spec fields fpkg knows beyond Flux's: `s.id` (the package id; it must match the
 directory name of a package, and is the project id of a root without a gamemode `.txt`,
 written as a plain `s.id = '<id>'` line, which fpkg reads before evaluating the spec) and
 `s.binaries` (above).
 
-Exit codes: `0` success, `1` failure, `2` usage or a case that needs a human (an edit
-`fpkg add`/`remove` cannot make safely, an unmarked package directory that the lock has
-as a registry package, a file in `content/` or `lua/bin/` that fpkg did not write), `3`
+Exit codes: `0` success, `1` failure, `2` usage (a bad argument or package id, no project
+where the command runs, a `--project` or `--server` that does not exist, a package id that
+is not one of the project's) or a case that needs a human (an edit `fpkg add`/`remove`
+cannot make safely, an unmarked package directory that the lock has as a registry package,
+a file in `content/` or `lua/bin/` that fpkg did not write, a symlinked directory there), `3`
 the lock is missing or stale under `--locked`, `4` `verify` found a difference.
 
 Typical flows:
@@ -303,8 +394,9 @@ Typical flows:
 ```sh
 # A new schema
 fpkg new schema hl2rp --title "HL2 RP" && cd hl2rp
-fpkg install                 # flux and its packages into packages/, fpkg.lock
-fpkg add gmsv_pg             # the PostgreSQL module, copied to garrysmod/lua/bin
+fpkg install                 # flux and its packages into packages/, fpkg.lock (commit it)
+fpkg add gmsv_pg             # the PostgreSQL module into packages/; copied to garrysmod/lua/bin
+                             # by an install that knows the server folder
 
 # Framework development: a flux-ce checkout instead of the registry version
 fpkg link ../flux-ce && fpkg install

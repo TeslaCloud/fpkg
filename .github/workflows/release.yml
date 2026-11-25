@@ -1,6 +1,6 @@
 # By hand: run CI, build fpkg for Linux (amd64 and arm64, statically linked) and Windows (x64),
-# and draft the GitHub release vX.Y.Z of the version in Cargo.toml with the archives and their
-# SHA256SUMS attached. Running it again replaces a draft; a published release is never touched.
+# and draft the GitHub release vX.Y.Z of the version in Cargo.toml with the archives, a copy of
+# each without the version in its name, and their SHA256SUMS attached. Running it again replaces a draft; a published release is never touched.
 # Publishing the draft creates the tag, for which image.yml publishes the image X.Y.Z.
 name: Release
 
@@ -158,6 +158,9 @@ jobs:
       - name: Draft v${{ needs.version.outputs.version }}
         working-directory: dist
         run: |
+          # A copy of each archive without the version in its name, for the links
+          # releases/latest/download/fpkg-linux-x86_64.tar.gz and the like.
+          for f in fpkg-"$VERSION"-*; do cp "$f" "fpkg-${f#fpkg-"$VERSION"-}"; done
           sha256sum fpkg-* > SHA256SUMS
           cat SHA256SUMS
           tag="v$VERSION"
