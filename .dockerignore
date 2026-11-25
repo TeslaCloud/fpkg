@@ -2,3 +2,5 @@
 /.github
 /target
 /server
+/tests/fixtures/tasks/.fpkg
+/tests/fixtures/tasks/generated

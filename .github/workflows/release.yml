@@ -117,7 +117,8 @@ jobs:
           if-no-files-found: error
 
   # The cross-compiled binary on Windows itself: it starts, evaluates the specs of the fixture
-  # in its child processes and packs an archive that is byte for byte the one packed on Linux.
+  # in its child processes, packs an archive that is byte for byte the one packed on Linux and
+  # runs tasks of the tasks fixture (SQLite, file and File writes).
   windows-test:
     name: windows (test)
     needs: [version, linux, windows]
@@ -141,6 +142,9 @@ jobs:
           sha256=$("$fpkg" --project tests/fixtures/flux-ce pack tween | tr -d '\r' | sed -n 's/^sha256 //p')
           echo "tween: $sha256 here, $TWEEN on Linux"
           [ -n "$sha256" ] && [ "$sha256" = "$TWEEN" ]
+          tasks=tests/fixtures/tasks
+          [ "$("$fpkg" --project "$tasks" db:count | tr -d '\r')" = "$(printf 'environment 1\nvisits 1')" ]
+          [ "$("$fpkg" --project "$tasks" files | tr -d '\r')" = "$(printf 'read data file, return 1\nfound out.lua')" ]
 
   draft:
     name: draft the release

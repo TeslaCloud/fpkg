@@ -27,8 +27,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/fpkg/target \
     CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked -p fpkg && \
     cp target/release/fpkg /usr/local/bin/fpkg
-# The binary evaluates specs on this architecture and libc.
-RUN fpkg --version && fpkg --project tests/fixtures/flux-ce check --quiet
+# The binary evaluates specs and runs tasks (SQLite, files) on this architecture and libc.
+RUN fpkg --version && fpkg --project tests/fixtures/flux-ce check --quiet && \
+    [ "$(fpkg --project tests/fixtures/tasks db:count)" = "$(printf 'environment 1\nvisits 1')" ] && \
+    [ "$(fpkg --project tests/fixtures/tasks files)" = "$(printf 'read data file, return 1\nfound out.lua')" ]
 
 # The binary alone, for the release archives:
 #   docker buildx build --build-context nl=../nl --target binary --output <dir> .
