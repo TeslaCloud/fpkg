@@ -5,7 +5,8 @@
 //! engine functions (`include`, `file`, `util`, `timer`, `sql` on SQLite, ...) in Rust, the
 //! stock libraries (`string`, `table` and `math` extensions, `hook`, `concommand`, convars,
 //! `utf8`, `Color`, ...) written for fpkg and embedded, the built-in binary modules
-//! `require` finds (`file`), and the game's paths mapped onto disk ([`Tree`]). A name of the
+//! `require` finds (`file`, and `pg` with the `postgres` feature), and the game's paths mapped
+//! onto disk ([`Tree`]). A name of the
 //! server API it does not implement fails loudly when called.
 //!
 //! The runtime knows nothing about tasks; fpkg builds them on it. Nothing runs between calls:
@@ -19,6 +20,8 @@ mod json;
 mod keyvalues;
 mod modules;
 mod output;
+#[cfg(feature = "postgres")]
+mod pg;
 mod runtime;
 mod sql;
 mod stock;

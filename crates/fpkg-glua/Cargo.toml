@@ -7,18 +7,37 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["postgres"]
+# The pg module (gmsv_pg) over PostgreSQL's wire protocol, with TLS through the
+# rustls, ring and webpki-roots that ureq already brings into fpkg.
+postgres = [
+    "dep:bytes",
+    "dep:fallible-iterator",
+    "dep:postgres-protocol",
+    "dep:rustls",
+    "dep:webpki-roots",
+]
+
 [dependencies]
 base64 = "0.23.1"
+bytes = { version = "1.11", optional = true }
 crc32fast = "1.5.5"
+# The version of the iterator trait that postgres-protocol's messages implement.
+fallible-iterator = { version = "0.2", optional = true }
 hex = "0.4.3"
 md-5 = "0.11.0"
 nl = { path = "../../../nl/crates/nl" }
+postgres-protocol = { version = "0.6.12", optional = true }
 # The SQLite of the game's sql library; bundled, so the static musl and the
 # MinGW builds compile it with the C compiler they already use for LuaJIT.
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# With the features ureq enables, so that the tree keeps one rustls on ring.
+rustls = { version = "0.23.46", default-features = false, features = ["logging", "ring", "std", "tls12"], optional = true }
 sha1 = "0.11.0"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
+webpki-roots = { version = "1.0.10", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"

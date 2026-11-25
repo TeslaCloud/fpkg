@@ -2,9 +2,10 @@
 //! `includes/modules/` of `LUA`.
 //!
 //! A module is loaded once; its name is kept in `_MODULES`. The binary modules are built into
-//! the runtime: `file` (gmsv_file's `File`); the database modules come later, and until then
-//! `require('pg')` and `require('mysqloo')` fail with a message that says so. A binary module
-//! the runtime does not have fails even when the server has its `.dll`.
+//! the runtime: `file` (gmsv_file's `File`) and `pg` (gmsv_pg's `pg`, unless the build is
+//! without the `postgres` feature, when `require('pg')` says so); MySQL comes later, and until
+//! then `require('mysqloo')` fails with a message that says so. A binary module the runtime
+//! does not have fails even when the server has its `.dll`.
 
 use std::rc::Rc;
 
@@ -51,9 +52,14 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         let st = state(lua);
         let mut m = st.modules.borrow_mut();
         m.insert("file".into(), Rc::new(crate::gmsv_file::open));
+        #[cfg(feature = "postgres")]
+        m.insert("pg".into(), Rc::new(crate::pg::open));
+        #[cfg(not(feature = "postgres"))]
         m.insert(
             "pg".into(),
-            unavailable("the PostgreSQL module is not available in fpkg tasks yet"),
+            unavailable(
+                "this build of fpkg has no PostgreSQL support: the pg module is not built in",
+            ),
         );
         m.insert(
             "mysqloo".into(),

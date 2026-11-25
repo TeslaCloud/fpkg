@@ -237,9 +237,15 @@ fn require_finds_built_in_modules() {
     let rt = runtime();
     rt.run("require('file') require('hook') require('file')");
     assert!(rt.eval::<bool>("istable(File) and isfunction(File.write)"));
+    #[cfg(feature = "postgres")]
+    {
+        rt.run("require('pg')");
+        assert!(rt.eval::<bool>("isfunction(pg.new_connection) and pg.version == '2.1.0'"));
+    }
+    #[cfg(not(feature = "postgres"))]
     assert!(
         rt.fails("require('pg')")
-            .contains("the PostgreSQL module is not available in fpkg tasks yet")
+            .contains("this build of fpkg has no PostgreSQL support")
     );
     assert!(rt.fails("require('mysqloo')").contains("mysqloo"));
     assert!(rt.fails("require('nothing')").contains("Module not found!"));
@@ -684,8 +690,8 @@ fn errors_of_engine_functions_are_strings_as_in_the_game() {
         "string: test.lua:1: bad argument #1 to 'CRC' (string expected, got no value)"
     );
     assert_eq!(
-        probe("local ok, err = pcall(require, 'pg') return type(err)..': '..err"),
-        "string: the PostgreSQL module is not available in fpkg tasks yet"
+        probe("local ok, err = pcall(require, 'mysqloo') return type(err)..': '..err"),
+        "string: the MySQL module (mysqloo) is not available in fpkg tasks yet"
     );
     assert_eq!(
         probe("local ok, err = pcall(function() sql.QueryTyped('SELECT ?', {}) end) return err"),
