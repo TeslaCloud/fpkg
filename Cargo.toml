@@ -5,6 +5,8 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The nl crates need 1.100; the Dockerfile builds with it, CI with stable.
+rust-version = "1.100"
 license = "MIT"
 publish = false
 

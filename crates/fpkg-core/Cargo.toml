@@ -3,6 +3,7 @@ name = "fpkg-core"
 description = "Flux package management: specs, archives, lockfiles, resolution, registries"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
