@@ -468,8 +468,8 @@ syntax and LuaJIT 3.0's extensions), in one state with what a server state has:
   classes, ...), `Color` and its conversions, `hook`, `concommand`, convars and `cvars`,
   `utf8`, `baseclass`, `weapons` and `scripted_ents`;
 - `require`, which finds the modules the game loads at startup, the built-in binary modules
-  (`file`, gmsv_file's `File`; `pg` and `mysqloo` are not available yet and say so), and Lua
-  modules in `includes/modules/`;
+  (`file`, gmsv_file's `File`, and `pg`, gmsv_pg's PostgreSQL module, see below; `mysqloo` is
+  not available yet and says so), and Lua modules in `includes/modules/`;
 - harmless stand-ins where a server would talk to clients: `net` sends to nobody,
   `util.AddNetworkString` numbers the names, `resource.*` records nothing, the player list is
   empty, `RunConsoleCommand` runs Lua console commands and sets convars;
@@ -504,6 +504,34 @@ wants them turns them on), journal mode `delete`, text stored and read byte for 
 SQLite in fpkg is newer than the game's (3.26.0), so SQL that needs a newer one (`ALTER
 TABLE ... DROP COLUMN`, `RETURNING`, `STRICT` tables, the `->>` operator) works in a task
 and fails on the server: keep migrations to what 3.26 has.
+
+**PostgreSQL.** `require('pg')` gives the `pg` of gmsv_pg 2.1.0, written for fpkg over
+PostgreSQL's wire protocol, so the database tasks of Flux work when `database.yml` names the
+`pg` adapter: its settings are read from the project's `config/database.yml` (or
+`database.local.yml`) as on the server. It has what a database layer uses of the module, with
+its messages, result shapes and errors: `pg.new_connection`, `connect` (and the fields `host`,
+`user`, `password`, `database`, `port`), `query`, `query_prepared`, `prepare`, `unprepare`,
+`run` and `set_sync`, `escape`, `quote`, `quote_name`, `escape_bytea`, `unescape`,
+`set_encoding`, `disconnect`, `is_open`, `server_version`, `protocol_version`, `pg.version*`
+and the listeners (`on`, `once`, `add_listener`, `remove_listeners`). Parameters and results
+go as text: a whole number within the 64-bit range is sent as an integer, booleans, numbers and
+NULL come back as Lua's, whole numbers beyond 2^53 as strings. Errors read as libpq writes them
+(`ERROR:  relation "x" does not exist`, the `LINE 1:` cursor, `DETAIL:`, `HINT:`), with their
+fields in `details`. A query runs when `run` is called and blocks until it is over, also an
+asynchronous one; the listeners of an asynchronous one are called from the `Think` hook
+`LuaEventEmitterManager_fpkg`, at the next turn of the loop or when Flux's adapter calls that
+hook while it waits, never from inside `run`. A connection authenticates with a password in
+the clear, MD5 or SCRAM-SHA-256, or none (`trust`), and is encrypted as `sslmode` in the
+`extra` argument of `connect` says (`prefer` by default): `prefer` and `require` without
+checking the certificate, `verify-ca` and `verify-full` against the Mozilla roots fpkg carries
+(libpq's `sslrootcert=system`). `extra` takes `host`, `hostaddr`, `port`, `dbname`, `user`,
+`password`, `sslmode`, `connect_timeout` (5 seconds unless set), `application_name` and
+`options`; another key of libpq is an error that names it. Not implemented, and an error that
+says so when called: `listen`, `unlisten` and notifications, `cancel`, `activate`,
+`deactivate`, reconnecting a connection the server ended (what needs it fails as lost), several
+hosts in one connection, GSSAPI and SSPI. libpq's environment variables (`PGHOST`,
+`PGPASSWORD`, ...) and its password file are not read. A build of `fpkg-glua` without its
+`postgres` feature has no `pg`, and `require('pg')` says so.
 
 **The virtual tree.** The runtime maps the game's paths onto disk. Inside a server
 (`<server>/garrysmod/gamemodes/<schema>`, or with `--server <dir>`), `garrysmod/` is the
