@@ -247,7 +247,16 @@ fn require_finds_built_in_modules() {
         rt.fails("require('pg')")
             .contains("this build of fpkg has no PostgreSQL support")
     );
-    assert!(rt.fails("require('mysqloo')").contains("mysqloo"));
+    #[cfg(feature = "mysql")]
+    {
+        rt.run("require('mysqloo')");
+        assert!(rt.eval::<bool>("isfunction(mysqloo.connect) and mysqloo.VERSION == '9'"));
+    }
+    #[cfg(not(feature = "mysql"))]
+    assert!(
+        rt.fails("require('mysqloo')")
+            .contains("this build of fpkg has no MySQL support")
+    );
     assert!(rt.fails("require('nothing')").contains("Module not found!"));
     write(
         rt.root(),
@@ -689,9 +698,17 @@ fn errors_of_engine_functions_are_strings_as_in_the_game() {
         ),
         "string: test.lua:1: bad argument #1 to 'CRC' (string expected, got no value)"
     );
+    #[cfg(feature = "mysql")]
+    assert_eq!(
+        probe(
+            "require('mysqloo') local ok, err = pcall(function() mysqloo.connect() end) return type(err)..': '..err"
+        ),
+        "string: test.lua:1: bad argument #1 to 'connect' (string expected, got no value)"
+    );
+    #[cfg(not(feature = "mysql"))]
     assert_eq!(
         probe("local ok, err = pcall(require, 'mysqloo') return type(err)..': '..err"),
-        "string: the MySQL module (mysqloo) is not available in fpkg tasks yet"
+        "string: this build of fpkg has no MySQL support: the mysqloo module is not built in"
     );
     assert_eq!(
         probe("local ok, err = pcall(function() sql.QueryTyped('SELECT ?', {}) end) return err"),

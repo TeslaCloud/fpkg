@@ -2,16 +2,18 @@
 //! `includes/modules/` of `LUA`.
 //!
 //! A module is loaded once; its name is kept in `_MODULES`. The binary modules are built into
-//! the runtime: `file` (gmsv_file's `File`) and `pg` (gmsv_pg's `pg`, unless the build is
-//! without the `postgres` feature, when `require('pg')` says so); MySQL comes later, and until
-//! then `require('mysqloo')` fails with a message that says so. A binary module the runtime
-//! does not have fails even when the server has its `.dll`.
+//! the runtime: `file` (gmsv_file's `File`), `pg` (gmsv_pg's `pg`) and `mysqloo` (MySQLOO's
+//! `mysqloo`); a build without the `postgres` or the `mysql` feature has no `pg` or no `mysqloo`,
+//! and `require` says so. A binary module the runtime does not have fails even when the server
+//! has its `.dll`.
 
 use std::rc::Rc;
 
 use nl::mlua::{self, Lua, MultiValue, Table, Value};
 
-use crate::runtime::{Opener, check_string, lua_error, state, truthy};
+#[cfg(any(not(feature = "postgres"), not(feature = "mysql")))]
+use crate::runtime::Opener;
+use crate::runtime::{check_string, lua_error, state, truthy};
 
 /// The modules the game's `includes/init.lua` requires at startup.
 pub(crate) const STARTUP: &[&str] = &[
@@ -43,6 +45,7 @@ pub(crate) const STARTUP: &[&str] = &[
     "ai_schedule",
 ];
 
+#[cfg(any(not(feature = "postgres"), not(feature = "mysql")))]
 fn unavailable(message: &'static str) -> Opener {
     Rc::new(move |_| Err(mlua::Error::RuntimeError(message.into())))
 }
@@ -61,9 +64,14 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                 "this build of fpkg has no PostgreSQL support: the pg module is not built in",
             ),
         );
+        #[cfg(feature = "mysql")]
+        m.insert("mysqloo".into(), Rc::new(crate::mysqloo::open));
+        #[cfg(not(feature = "mysql"))]
         m.insert(
             "mysqloo".into(),
-            unavailable("the MySQL module (mysqloo) is not available in fpkg tasks yet"),
+            unavailable(
+                "this build of fpkg has no MySQL support: the mysqloo module is not built in",
+            ),
         );
     }
     let loaded = lua.create_table()?;

@@ -485,3 +485,47 @@ fn an_error_in_a_listener_of_the_pg_module_fails_the_task() {
         "{e}"
     );
 }
+
+#[test]
+fn an_error_in_a_callback_of_the_mysqloo_module_fails_the_task() {
+    let env = Env::new();
+    let p = env.root.join("mysqltask");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(
+        p.join("mysqltask.txt"),
+        "\"mysqltask\"\n{\n\t\"base\"\t\t\"base\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        p.join("packagespec.lua"),
+        "Package:describe(function(s)\n  s.name = 'MySQL task'\n  s.version = '0.1.0'\n  s.date = '2026-11-25'\n  s.summary = 'A callback that fails.'\n  s.license = 'MIT'\nend)\n",
+    )
+    .unwrap();
+    let refused = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    std::fs::write(
+        p.join("taskspec.lua"),
+        format!(
+            "task('callback', function()\n  require('mysqloo')\n  local failing = mysqloo.connect('127.0.0.1', 'u', 'p', 'd', {refused})\n  function failing:onConnectionFailed() error('callback failure') end\n  failing:connect()\n  local other = mysqloo.connect('127.0.0.1', 'u', 'p', 'd', {refused})\n  function other:onConnectionFailed(err) print('second callback', err) end\n  other:connect()\nend)\n"
+        ),
+    )
+    .unwrap();
+    let o = code(env.fpkg(&p, &["callback"]), 1);
+    assert_eq!(
+        stdout(&o),
+        "second callback\tCan't connect to server on '127.0.0.1' (115)\n",
+        "{}",
+        text(&o)
+    );
+    let e = stderr(&o);
+    assert!(
+        e.starts_with("[ERROR] gamemodes/mysqltask/taskspec.lua:4: callback failure\n"),
+        "{e}"
+    );
+    assert!(
+        e.ends_with("error: the task finished, but 1 Lua error was reported\n"),
+        "{e}"
+    );
+}

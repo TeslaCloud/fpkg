@@ -5,9 +5,9 @@
 //! engine functions (`include`, `file`, `util`, `timer`, `sql` on SQLite, ...) in Rust, the
 //! stock libraries (`string`, `table` and `math` extensions, `hook`, `concommand`, convars,
 //! `utf8`, `Color`, ...) written for fpkg and embedded, the built-in binary modules
-//! `require` finds (`file`, and `pg` with the `postgres` feature), and the game's paths mapped
-//! onto disk ([`Tree`]). A name of the
-//! server API it does not implement fails loudly when called.
+//! `require` finds (`file`, `pg` with the `postgres` feature and `mysqloo` with the `mysql`
+//! feature), and the game's paths mapped onto disk ([`Tree`]). A name of the server API it
+//! does not implement fails loudly when called.
 //!
 //! The runtime knows nothing about tasks; fpkg builds them on it. Nothing runs between calls:
 //! timers and `Think` advance only in [`Runtime::pump`], [`Runtime::settle`] and
@@ -19,6 +19,8 @@ mod include;
 mod json;
 mod keyvalues;
 mod modules;
+#[cfg(feature = "mysql")]
+mod mysqloo;
 mod output;
 #[cfg(feature = "postgres")]
 mod pg;
@@ -28,6 +30,8 @@ mod stock;
 mod timer;
 pub mod tree;
 mod util;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+mod verify;
 
 pub use output::{Captured, Output, Stream, strip_escapes};
 pub use runtime::{Config, Failure, Frame, Opener, Poster, Runtime, check_syntax};
