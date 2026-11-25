@@ -58,9 +58,18 @@ pub fn exit_code(e: &anyhow::Error) -> u8 {
         if let Some(ie) = cause.downcast_ref::<InstallError>() {
             return match ie {
                 InstallError::Stale(_) | InstallError::NoLock => EXIT_STALE,
-                InstallError::Conflict(_) | InstallError::FileConflict(_) => EXIT_HUMAN,
+                InstallError::Conflict(_)
+                | InstallError::FileConflict(_)
+                | InstallError::SymlinkedDir { .. } => EXIT_HUMAN,
                 _ => EXIT_FAILURE,
             };
+        }
+        // Where to run a command is a usage question.
+        if let Some(
+            ProjectError::NotFound(_) | ProjectError::NotAProject(_) | ProjectError::NotAServer(_),
+        ) = cause.downcast_ref::<ProjectError>()
+        {
+            return EXIT_HUMAN;
         }
     }
     EXIT_FAILURE
@@ -81,7 +90,7 @@ pub fn print_error(out: &Out, e: &anyhow::Error) {
 pub struct Ctx {
     pub out: Out,
     pub env: Env,
-    pub project_flag: Option<Option<PathBuf>>,
+    pub project_flag: Option<PathBuf>,
     pub server_flag: Option<PathBuf>,
     pub registry_flag: Option<String>,
     pub offline: bool,
@@ -101,17 +110,11 @@ impl Ctx {
     /// with `--server` as its server folder.
     pub fn project(&self) -> Result<Project> {
         let mut p = match &self.project_flag {
-            Some(Some(dir)) => Project::at(dir)?,
-            Some(None) => {
-                return Err(exit(
-                    EXIT_HUMAN,
-                    "--project needs a directory here (only `fpkg init --project` takes none)",
-                ));
-            }
+            Some(dir) => Project::at(existing("--project", dir)?)?,
             None => Project::discover(&cwd()?)?,
         };
         if let Some(dir) = &self.server_flag {
-            p.server = Some(project::server_root(dir)?);
+            p.server = Some(project::server_root(existing("--server", dir)?)?);
         }
         Ok(p)
     }
@@ -131,7 +134,7 @@ impl Ctx {
                     .is_some_and(|pe| matches!(pe, ProjectError::NotFound(_))) =>
             {
                 let server = match &self.server_flag {
-                    Some(dir) => Some(project::server_root(dir)?),
+                    Some(dir) => Some(project::server_root(existing("--server", dir)?)?),
                     None => project::find_server_tree(&cwd),
                 };
                 match server {
@@ -139,7 +142,12 @@ impl Ctx {
                         let projects = project::server_projects(&s)?;
                         Ok(Targets::Server(s, projects))
                     }
-                    None => Err(e),
+                    None => Err(exit(
+                        EXIT_HUMAN,
+                        format!(
+                            "{e}. For the gamemodes of a server, run it in the server folder (the one with garrysmod/gamemodes/), or pass --server <dir>"
+                        ),
+                    )),
                 }
             }
             Err(e) => Err(e),
@@ -273,11 +281,33 @@ impl Ctx {
     }
 }
 
+/// The directory a flag names, which has to exist.
+fn existing<'a>(flag: &str, dir: &'a std::path::Path) -> Result<&'a std::path::Path> {
+    if dir.is_dir() {
+        Ok(dir)
+    } else if dir.exists() {
+        Err(exit(
+            EXIT_HUMAN,
+            format!("{flag} {}: not a directory", dir.display()),
+        ))
+    } else {
+        Err(exit(
+            EXIT_HUMAN,
+            format!("{flag} {}: the directory does not exist", dir.display()),
+        ))
+    }
+}
+
 /// The current directory as the shell reached it.
 pub fn cwd() -> Result<PathBuf> {
     project::logical_cwd()
         .or_else(|| std::env::current_dir().ok())
         .context("cannot read the current directory")
+}
+
+/// A package id given on the command line; an invalid one is a usage error.
+pub fn usage_id(id: &str) -> Result<fpkg_core::PackageId> {
+    fpkg_core::PackageId::new(id).map_err(|e| exit(EXIT_HUMAN, e.to_string()))
 }
 
 /// `id@rest` -> (`id`, Some(`rest`)).
@@ -320,7 +350,7 @@ pub fn run(cli: Cli, out: Out) -> Result<()> {
         json_sink: RefCell::new(None),
     };
     match cli.cmd {
-        Cmd::Init => local::init(&ctx),
+        Cmd::Init { dir } => local::init(&ctx, dir),
         Cmd::New {
             kind,
             name,
@@ -383,5 +413,12 @@ pub fn run(cli: Cli, out: Out) -> Result<()> {
         Cmd::Docs { spec } => remote::docs(&ctx, &spec),
         Cmd::Cache { action } => remote::cache(&ctx, action),
         Cmd::Mirror { registry_url, dir } => remote::mirror(&ctx, &registry_url, &dir),
+        Cmd::Completions { shell } => {
+            let mut command = <Cli as clap::CommandFactory>::command();
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut command, "fpkg", &mut script);
+            std::io::stdout().write_all(&script)?;
+            Ok(())
+        }
     }
 }

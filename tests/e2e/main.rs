@@ -180,6 +180,7 @@ fn flux_ce_to_registry_to_schema() {
         assert!(Path::new(a["path"].as_str().unwrap()).is_file());
         assert_eq!(a["members"][0]["path"], format!("{id}/packagespec.lua"));
     }
+    let listed = env.root.join("listed");
     let o = ok(env.fpkg(
         &flux,
         &[
@@ -187,9 +188,10 @@ fn flux_ce_to_registry_to_schema() {
             "fontawesome",
             "--list",
             "-o",
-            archives.to_str().unwrap(),
+            listed.to_str().unwrap(),
         ],
     ));
+    assert!(!listed.exists(), "--list writes no archive");
     assert!(
         text(&o).contains("fontawesome/lib/cl_icons.lua"),
         "{}",
@@ -419,7 +421,31 @@ fn flux_ce_to_registry_to_schema() {
         read(&spec)
     );
     assert!(schema.join("packages/yaml/.fpkg.toml").is_file());
-    code(env.fpkg(&schema, &["add", "yaml"]), 1);
+    let o = code(env.fpkg(&schema, &["add", "yaml"]), 2);
+    assert!(
+        text(&o).contains("fpkg add yaml@<constraint>"),
+        "{}",
+        text(&o)
+    );
+    // With a constraint, add changes the one the manifest has.
+    let o = ok(env.fpkg(&schema, &["add", "sfs@>= 7.0.9, < 8.0.0"]));
+    assert!(
+        text(&o).contains("Changing sfs ~> 7.0 -> >= 7.0.9, < 8.0.0 in packagespec.lua"),
+        "{}",
+        text(&o)
+    );
+    assert!(
+        read(&spec).contains("  s.depends('sfs', '>= 7.0.9, < 8.0.0')\n"),
+        "{}",
+        read(&spec)
+    );
+    ok(env.fpkg(&schema, &["add", "sfs@~> 7.0"]));
+    let o = ok(env.fpkg(&schema, &["add", "sfs@~> 7.0"]));
+    assert!(
+        text(&o).contains("already depends on sfs ~> 7.0"),
+        "{}",
+        text(&o)
+    );
     // A failed resolution leaves the manifest and the lock as they were.
     let (before_spec, before_lock) = (read(&spec), read(&schema.join("fpkg.lock")));
     let o = code(env.fpkg(&schema, &["add", "tween@~> 99.0"]), 1);
@@ -453,6 +479,21 @@ fn flux_ce_to_registry_to_schema() {
         ),
     )
     .unwrap();
+    // What is resolved is what the edited file evaluates to: a line that stays
+    // inside a block comment adds nothing, and nothing is written.
+    let plain = read(&spec);
+    let commented = plain.replace("end)\n", "  --[[\n  -- s.depends 'tween'\n  ]]\nend)\n");
+    std::fs::write(&spec, &commented).unwrap();
+    let before_lock = read(&schema.join("fpkg.lock"));
+    let o = code(env.fpkg(&schema, &["add", "tween"]), 2);
+    assert!(
+        text(&o).contains("does not depend on tween ~> 2.1 when it is evaluated"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(read(&spec), commented);
+    assert_eq!(read(&schema.join("fpkg.lock")), before_lock);
+    std::fs::write(&spec, &plain).unwrap();
 
     // Yank: the lock keeps working; new resolutions skip the version.
     ok(env.fpkg(&flux, &["yank", "sfs@7.0.9"]));
@@ -461,7 +502,10 @@ fn flux_ce_to_registry_to_schema() {
     std::fs::remove_file(schema.join("fpkg.lock")).unwrap();
     code(env.fpkg(&schema, &["install"]), 1);
     ok(env.fpkg(&flux, &["yank", "sfs@7.0.9", "--undo"]));
-    ok(env.fpkg(&schema, &["update"]));
+    let o = ok(env.fpkg(&schema, &["update"]));
+    assert!(text(&o).contains("next: fpkg install"), "{}", text(&o));
+    let o = ok(env.fpkg(&schema, &["update"]));
+    assert!(text(&o).contains("fpkg.lock is up to date"), "{}", text(&o));
     ok(env.fpkg(&schema, &["install", "--locked"]));
 
     // Mirror the lock's packages and install from the mirror.
@@ -479,6 +523,31 @@ fn flux_ce_to_registry_to_schema() {
     let mirror_url = format!("file://{}/", mirror.display());
     ok(env.fpkg(&schema, &["--registry", &mirror_url, "install", "--locked"]));
     ok(env.fpkg(&schema, &["verify"]));
+    // A file:// mirror is no network: --offline uses it with an empty cache.
+    std::fs::remove_dir_all(schema.join("packages/sfs")).unwrap();
+    std::fs::remove_dir_all(env.root.join("cache")).unwrap();
+    ok(env.fpkg(
+        &schema,
+        &[
+            "--offline",
+            "--registry",
+            &mirror_url,
+            "install",
+            "--locked",
+        ],
+    ));
+    ok(env.fpkg(&schema, &["verify"]));
+
+    // A linked checkout takes the place of what it nests, and the summary
+    // counts the local packages too.
+    ok(env.fpkg(&schema, &["link", flux.to_str().unwrap()]));
+    let o = ok(env.fpkg(&schema, &["install"]));
+    assert!(
+        text(&o).contains("Removing cable 1.0.0 (replaced by packages/flux/packages/cable)")
+            && text(&o).contains("2 removed, 0 unchanged, 16 local"),
+        "{}",
+        text(&o)
+    );
 
     // docs and cache.
     let o = ok(env.fpkg(&schema, &["--json", "cache", "dir"]));
@@ -675,9 +744,13 @@ fn linked_flux_ce_in_a_gamemode_project() {
     let spec = read(&schema.join("packagespec.lua"));
     assert!(spec.starts_with("Package:describe(function(s)\n  s.name        = 'My Schema'\n  s.version     = '0.1.0'\n  s.date        = '"), "{spec}");
     assert!(spec.contains("  s.license     = 'MIT'\n\n  s.depends('flux', '~> 0.9')\n\n  -- Uncomment the dependency of the database driver the server uses, then run `fpkg install`.\n  -- SQLite needs none. MySQL and MariaDB use mysqloo, which is not an fpkg package yet:\n  -- copy its module to garrysmod/lua/bin by hand.\n  -- s.depends 'gmsv_pg'\nend)\n"), "{spec}");
-    assert_eq!(
-        read(&schema.join("gamemode/init.lua")),
-        "--- Server entry point of the gamemode.\n-- Sends the client entry point to clients and boots Flux from the `flux` package in the\n-- `packages` folder of the gamemode.\n\nAddCSLuaFile 'cl_init.lua'\n\ninclude(engine.ActiveGamemode()..'/packages/flux/boot.lua')\n"
+    let init = read(&schema.join("gamemode/init.lua"));
+    assert!(
+        init.starts_with("--- Server entry point of the gamemode.\n")
+            && init.contains("\nif !file.Exists(boot_file, 'LUA') then\n")
+            && init.contains("CompileString('local a = 0 a += 1', 'flux_vm_check', false)")
+            && init.ends_with("\ninclude(boot_file)\n"),
+        "{init}"
     );
     assert_eq!(
         read(&schema.join("gamemode/cl_init.lua")),
@@ -702,7 +775,13 @@ fn linked_flux_ce_in_a_gamemode_project() {
     );
     assert_eq!(
         read(&schema.join(".gitignore")),
-        "/packages/*\n/db/\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/docker-compose.override.yml\n"
+        "/packages/*\n/db/\n/config/*\n!/config/.gitkeep\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/target/\n/docker-compose.override.yml\n"
+    );
+    assert_eq!(read(&schema.join("config/.gitkeep")), "");
+    assert!(
+        text(&o).contains("docker compose up") && text(&o).contains("garrysmod/gamemodes/"),
+        "{}",
+        text(&o)
     );
     assert!(!schema.join("packages").exists());
     code(env.fpkg_in(&env.root, &["new", "schema", "myschema"]), 2);
@@ -742,11 +821,13 @@ fn linked_flux_ce_in_a_gamemode_project() {
         PathBuf::from("../../flux-ce")
     );
 
-    // install resolves flux and what it nests from the link, offline.
+    // install resolves flux and what it nests from the link, offline; a
+    // nested package that nothing depends on (llm) is not locked.
     let o = ok(env.run_in(&schema, &["install"], &offline, None));
     let lock = read(&schema.join("fpkg.lock"));
-    assert_eq!(lock.matches("[[package]]").count(), 17, "{lock}");
-    assert_eq!(lock.matches("source = \"workspace\"").count(), 17, "{lock}");
+    assert_eq!(lock.matches("[[package]]").count(), 16, "{lock}");
+    assert_eq!(lock.matches("source = \"workspace\"").count(), 16, "{lock}");
+    assert!(!lock.contains("id = \"llm\""), "{lock}");
     assert!(
         text(&o).contains("3 files copied") || text(&o).contains("4 files copied"),
         "{}",
@@ -907,7 +988,9 @@ fn linked_flux_ce_in_a_gamemode_project() {
     assert!(spec.contains("  -- s.depends 'gmsv_pg'\n"), "{spec}");
     // Outside a server, the modules cannot be placed: install says so and succeeds.
     assert!(
-        text(&o).contains("gmsv_demo_linux64.dll (gmsv_demo)") && text(&o).contains("--server"),
+        text(&o).contains("the binary modules of gmsv_demo (2 modules) were not copied")
+            && text(&o).contains("--server")
+            && !text(&o).contains("gmsv_demo_linux64.dll"),
         "{}",
         text(&o)
     );
@@ -980,13 +1063,50 @@ fn linked_flux_ce_in_a_gamemode_project() {
         "{}",
         text(&o)
     );
-    code(env.fpkg_in(&schema, &["unlink", "cable"]), 1);
+    code(env.fpkg_in(&schema, &["unlink", "cable"]), 2);
+    ok(env.fpkg_in(
+        &schema,
+        &["link", "../flux-ce/packages/tween", "--as", "spare"],
+    ));
+    let o = ok(env.fpkg_in(&schema, &["unlink", "spare"]));
+    assert!(
+        text(&o).contains("nothing depends on spare, so it leaves fpkg.lock"),
+        "{}",
+        text(&o)
+    );
+    // unlink takes an id, never a path to a link elsewhere.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&flux, env.root.join("mylink")).unwrap();
+        for arg in ["../mylink", "../../mylink"] {
+            let o = code(env.fpkg_in(&schema, &["unlink", arg]), 2);
+            assert!(text(&o).contains("invalid package id"), "{}", text(&o));
+        }
+        assert!(std::fs::symlink_metadata(env.root.join("mylink")).is_ok());
+    }
     let o = ok(env.fpkg_in(&schema, &["unlink", "flux"]));
-    assert!(text(&o).contains("fpkg install"), "{}", text(&o));
+    assert!(
+        text(&o).contains("fpkg install, which fetches the registry version"),
+        "{}",
+        text(&o)
+    );
     assert!(!schema.join("packages/flux").exists());
     assert!(
         flux.join("packages/cable/packagespec.lua").is_file(),
         "the checkout is untouched"
+    );
+    // A lock written with the link says what to do once the link is gone.
+    let o = code(
+        env.run_in(&schema, &["install", "--locked"], &offline, None),
+        3,
+    );
+    assert!(
+        text(&o).contains("locked as local packages that no longer exist: active_network, ")
+            && text(&o).contains("fpkg.lock was written while these packages were local")
+            && text(&o).contains("and commit fpkg.lock")
+            && text(&o).matches("no longer exist").count() == 1,
+        "{}",
+        text(&o)
     );
     // Without the link, flux has to come from the registry, which is not there.
     code(env.run_in(&schema, &["install"], &offline, None), 1);
@@ -1093,6 +1213,17 @@ fn server_owner_flow() {
     );
     // The packages are in place already; only the files were held back.
     assert!(text(&o).contains("Installing flux 0.9.0"), "{}", text(&o));
+    // verify does not pass what was never copied.
+    let o = code(env.fpkg_in(&server, &["verify"]), 4);
+    assert!(
+        text(&o).contains(&format!(
+            "fontawesome provides {brands}, which was not copied"
+        )) && text(&o).contains(
+            "gmsv_demo provides garrysmod/lua/bin/gmsv_demo_linux64.dll, which was not copied"
+        ),
+        "{}",
+        text(&o)
+    );
     let o = ok(env.fpkg_in(&server, &["install", "--force"]));
     assert!(
         text(&o).contains("17 unchanged") && text(&o).contains("7 files copied"),
@@ -1101,6 +1232,10 @@ fn server_owner_flow() {
     );
     assert!(gm.join("packages/flux/.fpkg.toml").is_file());
     assert!(gm.join("packages/flux/boot.lua").is_file());
+    assert!(
+        server.join("garrysmod/lua/_flux").is_dir(),
+        "Flux cannot create it on its first boot"
+    );
     assert!(
         !gm.join("packages/flux/packages").exists(),
         "the root package has no packages/"
@@ -1281,11 +1416,38 @@ fn server_owner_flow() {
         ok(env.fpkg_in(&server, &["verify"]));
     }
 
-    // No project and no server folder: the error says where it looked.
+    // No project and no server folder: a usage error that says where it
+    // looked, and names server folders only for the commands that take one.
     let nowhere = env.root.join("nowhere");
     std::fs::create_dir_all(&nowhere).unwrap();
-    let o = code(env.fpkg_in(&nowhere, &["install"]), 1);
-    assert!(text(&o).contains("server folder"), "{}", text(&o));
+    let o = code(env.fpkg_in(&nowhere, &["install"]), 2);
+    assert!(
+        text(&o).contains("not inside an fpkg project")
+            && text(&o).contains("fpkg new schema <name>")
+            && text(&o).contains("server folder"),
+        "{}",
+        text(&o)
+    );
+    let o = code(env.fpkg_in(&nowhere, &["check"]), 2);
+    assert!(
+        text(&o).contains("not inside an fpkg project") && !text(&o).contains("server"),
+        "{}",
+        text(&o)
+    );
+    assert_eq!(text(&o).lines().count(), 1, "{}", text(&o));
+    for (flag, args) in [
+        ("--project", &["--project", "/nonexistent/x", "check"][..]),
+        ("--server", &["--server", "/nonexistent/x", "install"][..]),
+    ] {
+        let o = code(env.fpkg_in(&gm, args), 2);
+        assert!(
+            text(&o).contains(&format!(
+                "{flag} /nonexistent/x: the directory does not exist"
+            )),
+            "{}",
+            text(&o)
+        );
+    }
 }
 
 #[test]
@@ -1364,9 +1526,9 @@ fn new_kinds_and_where_they_go() {
         "{v}"
     );
     assert_eq!(v["path"], app.display().to_string());
-    assert_eq!(files_of(&o).len(), 17, "{v}");
+    assert_eq!(files_of(&o).len(), 18, "{v}");
     assert_eq!(
-        files_of(&o)[14..],
+        files_of(&o)[15..],
         ["Dockerfile", "docker-compose.yml", ".dockerignore"],
         "{v}"
     );
@@ -1401,12 +1563,18 @@ fn new_kinds_and_where_they_go() {
             && !bare.join("README.md").exists()
     );
     ok(env.fpkg_in(&bare, &["check"]));
+    let o = ok(env.fpkg_in(&bare, &["list"]));
+    assert!(
+        text(&o).contains("nothing installed in packages/; run fpkg install"),
+        "{}",
+        text(&o)
+    );
     // --skip-docker leaves out the container setup; a minimal schema never has it.
     let o = ok(env.fpkg_in(
         &env.root,
         &["--json", "new", "schema", "nodock", "--skip-docker"],
     ));
-    assert_eq!(files_of(&o).len(), 14);
+    assert_eq!(files_of(&o).len(), 15);
     let nodock = env.root.join("nodock");
     for f in ["Dockerfile", "docker-compose.yml", ".dockerignore"] {
         assert!(app.join(f).is_file() && !nodock.join(f).exists(), "{f}");
@@ -1472,7 +1640,7 @@ fn new_kinds_and_where_they_go() {
             && !app.join("packages/inner/.gitignore").exists()
     );
     assert!(read(&app.join(".gitignore")).ends_with(
-        "/content/resource/fonts/fa-*.ttf\n/docker-compose.override.yml\n!/packages/inner/\n"
+        "/content/resource/fonts/fa-*.ttf\n/target/\n/docker-compose.override.yml\n!/packages/inner/\n"
     ));
     let o = code(env.fpkg_in(&app, &["new", "package", "inner"]), 2);
     assert!(text(&o).contains("already exists"), "{}", text(&o));
@@ -1702,8 +1870,7 @@ fn new_kinds_and_where_they_go() {
         &["new", "widget", "x"][..],
         &["new", "schema"][..],
         &["new", "package", "x", "--title", "two\nlines"][..],
-        &["init", "x"][..],
-        &["init"][..],
+        &["--project", "install"][..],
     ] {
         code(env.fpkg_in(&outside, args), 2);
     }
@@ -1732,8 +1899,158 @@ fn new_kinds_and_where_they_go() {
         text(&o)
     );
     assert!(!outside.join("x").exists());
-    // fpkg init --project still turns a directory into a project.
+    let o = code(env.fpkg_in(&outside, &["--project", "install"]), 2);
+    assert!(
+        text(&o).contains("--project took 'install' as its directory"),
+        "{}",
+        text(&o)
+    );
+    // fpkg init [dir] turns a directory into a project, as --project <dir> does.
     let plain = env.root.join("plain");
     ok(env.fpkg_in(&env.root, &["--project", plain.to_str().unwrap(), "init"]));
     assert!(plain.join("packagespec.lua").is_file() && plain.join("packages").is_dir());
+    ok(env.fpkg_in(&outside, &["init", "fresh"]));
+    assert!(read(&outside.join("fresh/packagespec.lua")).contains("  s.license     = 'MIT'\n"));
+    let o = ok(env.fpkg_in(&outside.join("fresh"), &["check"]));
+    assert!(!text(&o).contains("warning"), "{}", text(&o));
+    code(env.fpkg_in(&outside.join("fresh"), &["init"]), 2);
+    let o = ok(env.fpkg_in(&app, &["init", "schema"]));
+    assert!(
+        text(&o).contains("is inside the project app"),
+        "{}",
+        text(&o)
+    );
+}
+
+#[test]
+fn a_path_dependency_is_named_by_a_package_id() {
+    let env = Env::new();
+    let schema = env.root.join("schema");
+    let spec = |dep: &str| {
+        format!(
+            "Package:describe(function(s)\n  s.name    = 'Schema'\n  s.version = '0.1.0'\n  s.depends '{dep}'\nend)\n"
+        )
+    };
+    write(&schema.join("packagespec.lua"), &spec("../Shared-Lib"));
+    std::fs::create_dir_all(schema.join("packages")).unwrap();
+    let lib = "Package:describe(function(s)\n  s.name    = 'Shared'\n  s.version = '1.0.0'\nend)\n";
+    write(&env.root.join("Shared-Lib/packagespec.lua"), lib);
+    // No lock is written that the next run could not read back.
+    let o = code(env.fpkg(&schema, &["install"]), 1);
+    assert!(
+        text(&o).contains("its directory name 'Shared-Lib' is not a package id"),
+        "{}",
+        text(&o)
+    );
+    assert!(!schema.join("fpkg.lock").exists());
+    let o = code(env.fpkg(&schema, &["check"]), 1);
+    assert!(
+        text(&o).contains("its directory name 'Shared-Lib' is not a package id"),
+        "{}",
+        text(&o)
+    );
+    write(&env.root.join("shared_lib/packagespec.lua"), lib);
+    write(&schema.join("packagespec.lua"), &spec("../shared_lib"));
+    ok(env.fpkg(&schema, &["install"]));
+    ok(env.fpkg(&schema, &["install", "--locked"]));
+    assert!(read(&schema.join("fpkg.lock")).contains("source = \"path+../shared_lib\""));
+}
+
+#[test]
+fn a_cyclic_lock_is_refused() {
+    let env = Env::new();
+    let flux = env.root.join("flux-ce");
+    copy_dir(&fixtures(), &flux);
+    ok(env.fpkg(&flux, &["lock"]));
+    let lock = read(&flux.join("fpkg.lock"));
+    let sfs = "id = \"sfs\"\nversion = \"7.0.9\"\nsource = \"workspace\"\n";
+    assert!(lock.contains(sfs), "{lock}");
+    let cyclic = lock.replace(sfs, &format!("{sfs}dependencies = [\"cable\"]\n"));
+    std::fs::write(flux.join("fpkg.lock"), cyclic).unwrap();
+    for args in [&["install", "--locked"][..], &["--json", "tree"][..]] {
+        let o = code(env.fpkg(&flux, args), 1);
+        assert!(
+            text(&o).contains("a dependency cycle: cable -> sfs -> cable"),
+            "{args:?}: {}",
+            text(&o)
+        );
+    }
+}
+
+#[test]
+fn check_lists_problems_and_dependencies_nothing_provides() {
+    let env = Env::new();
+    let schema = env.root.join("schema");
+    write(
+        &schema.join("packagespec.lua"),
+        "Package:describe(function(s)\n  s.name    = 'Schema'\n  s.version = '0.1.0'\n  s.license = 'MIT'\n  s.depends 'flx'\n  s.depends 'inner'\nend)\n",
+    );
+    write(
+        &schema.join("packages/inner/packagespec.lua"),
+        "Package:describe(function(s)\n  s.name    = 'Inner'\n  s.version = '1.0.0'\n  s.summary = 'A package.'\n  s.license = 'MIT'\nend)\n",
+    );
+    let o = ok(env.fpkg(&schema, &["check"]));
+    let out = text(&o);
+    assert!(
+        out.contains(
+            "dependency 'flx' is not a package of the project, not in fpkg.lock and not on file://"
+        ) && out.contains("; did you mean flux?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("schema (project manifest)") && !out.contains("inner 1.0.0"),
+        "a package without problems is left out: {out}"
+    );
+    assert!(
+        out.contains("2 checked, 0 with errors, 1 with warnings"),
+        "{out}"
+    );
+    let o = ok(env.fpkg(&schema, &["-v", "check"]));
+    assert!(text(&o).contains("inner 1.0.0"), "{}", text(&o));
+    let o = ok(env.fpkg(&schema, &["-q", "check"]));
+    assert!(!text(&o).contains("flx"), "{}", text(&o));
+    let o = ok(env.fpkg(&schema, &["--offline", "check"]));
+    assert!(
+        !text(&o).contains("'flx'"),
+        "offline asks nothing: {}",
+        text(&o)
+    );
+    let o = code(env.fpkg(&schema, &["check", "flx"]), 2);
+    assert!(
+        text(&o).contains("not a package of this project"),
+        "{}",
+        text(&o)
+    );
+}
+
+#[test]
+fn help_and_completions() {
+    let env = Env::new();
+    for (shell, start) in [
+        ("bash", "_fpkg() {"),
+        ("zsh", "#compdef fpkg"),
+        ("fish", "complete -c fpkg"),
+    ] {
+        let o = ok(env.fpkg_in(&env.root, &["completions", shell]));
+        let script = String::from_utf8_lossy(&o.stdout);
+        assert!(
+            script.contains(start) && script.contains("install"),
+            "{shell}: {script}"
+        );
+    }
+    code(env.fpkg_in(&env.root, &["completions", "cmd"]), 2);
+    // A command's own options come first, the global ones under their own heading.
+    let o = ok(env.fpkg_in(&env.root, &["search", "--help"]));
+    let help = String::from_utf8_lossy(&o.stdout);
+    let own = help
+        .find("--page <PAGE>  The page of the results")
+        .unwrap_or(usize::MAX);
+    let global = help.find("Global options:").unwrap_or(0);
+    assert!(own < global, "{help}");
+    let o = code(env.fpkg_in(&env.root, &["--env", "prod", "check"]), 2);
+    assert!(
+        text(&o).contains("production, development, test"),
+        "{}",
+        text(&o)
+    );
 }

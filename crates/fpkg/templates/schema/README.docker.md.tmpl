@@ -64,13 +64,14 @@ https://github.com/TeslaCloud/flux-dependencies.
 - The files of the checkout have to be writable by the user ID 1000, which the server runs as.
 - Packages linked with `fpkg link` point outside of the container. Bind mount the folder each one
   links to at `/home/steam/flux_server/garrysmod/gamemodes/{{id}}/packages/<id>` in a
-  `docker-compose.override.yml` next to `docker-compose.yml`, which Git ignores:
+  `docker-compose.override.yml` next to `docker-compose.yml`, which Git ignores. For flux linked
+  to a flux-ce checkout next to this one:
 
   ```yaml
   services:
     server:
       volumes:
-        - <path to the checkout>:/home/steam/flux_server/garrysmod/gamemodes/{{id}}/packages/<id>
+        - ../flux-ce:/home/steam/flux_server/garrysmod/gamemodes/{{id}}/packages/flux
   ```
 
 - `FLUX_MAP` sets the map (`gm_construct`) and `FLUX_PORT` the port on the host (27015), in the
@@ -78,5 +79,6 @@ https://github.com/TeslaCloud/flux-dependencies.
 - `docker build -t {{id}} .` builds an image of the server with the schema, its packages and
   its content in it, which runs without the checkout:
   `docker run -it -p 27015:27015/udp -p 27015:27015/tcp {{id}}`. Local config files
-  (`*.local.yml`, `*.local.lua`) stay out of the image.
+  (`*.local.yml`, `*.local.lua`) stay out of the image, and so does a linked package: run
+  `fpkg unlink <id> && fpkg install` before you build.
 

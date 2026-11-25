@@ -22,8 +22,17 @@ pub enum ResolveError {
     NoSolution(String),
     #[error("dependency cycle: {}; Flux's Package:include would recurse forever", .0.join(" -> "))]
     Cycle(Vec<String>),
-    #[error("--offline: the cache has no metadata for {}", .0.join(", "))]
+    #[error("offline: the cache has no metadata for {}", .0.join(", "))]
     Offline(Vec<String>),
+    #[error(
+        "the checksum of {id} {version} changed on the registry (lock {locked}, registry {registry}); versions are immutable, so the registry now serves another archive under the same version. Run `fpkg update {id}` to accept it"
+    )]
+    ChecksumChanged {
+        id: String,
+        version: Version,
+        locked: String,
+        registry: String,
+    },
     #[error(transparent)]
     Registry(#[from] RegistryError),
 }
@@ -57,6 +66,9 @@ pub struct ResolveInput<'a> {
     pub root_deps: &'a [Dependency],
     /// Workspace packages by id; each is fixed at its spec version.
     pub workspace: &'a BTreeMap<String, Manifest>,
+    /// The workspace packages nested in another one (a linked monorepo's
+    /// `packages/`): resolved only when something depends on them.
+    pub nested: &'a BTreeSet<String>,
     /// Path packages by id, with their project-relative directory.
     pub paths: &'a BTreeMap<String, (String, Manifest)>,
     pub lock: Option<&'a Lockfile>,
@@ -444,8 +456,13 @@ impl DependencyProvider for Provider<'_> {
                             .map(|id| (id.to_string(), d.constraint.clone()))
                     })
                     .collect();
-                // Every local package is part of the project, depended on or not.
-                for id in input.workspace.keys().chain(input.paths.keys()) {
+                // Every local package but a nested one is part of the project,
+                // depended on or not.
+                let own = input
+                    .workspace
+                    .keys()
+                    .filter(|id| !input.nested.contains(*id));
+                for id in own.chain(input.paths.keys()) {
                     if !list.iter().any(|(d, _)| d == id) {
                         list.push((id.clone(), Constraint::any()));
                     }
@@ -519,18 +536,62 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Lockfile, ResolveError> {
                 text += line;
                 text.push('\n');
             }
+            let cands = provider.candidates.borrow();
+            let known: BTreeSet<&str> = input
+                .workspace
+                .keys()
+                .chain(input.paths.keys())
+                .chain(
+                    cands
+                        .iter()
+                        .filter(|(_, c)| !c.is_empty())
+                        .map(|(id, _)| id),
+                )
+                .map(String::as_str)
+                .chain(["flux"])
+                .collect();
             for id in provider.not_found.borrow().iter() {
+                let hint = crate::nearest_id(id, known.iter().copied())
+                    .map(|n| format!("; did you mean {n}?"))
+                    .unwrap_or_default();
                 match input.registry {
                     Some((_, url)) => {
-                        text +=
-                            &format!("{id} is not a local package and not on the registry {url}\n")
+                        text += &format!(
+                            "{id} is not a local package and not on the registry {url}{hint}\n"
+                        )
                     }
                     None => {
-                        text +=
-                            &format!("{id} is not a local package and no registry is configured\n")
+                        text += &format!(
+                            "{id} is not a local package and no registry is configured{hint}\n"
+                        )
                     }
                 }
             }
+            // The versions there are, of each id a constraint finds none of.
+            let seen = provider.seen.borrow();
+            let mut ids: Vec<&String> = cands.keys().collect();
+            ids.sort();
+            for id in ids {
+                let versions: Vec<&Candidate> = cands[id].iter().filter(|c| !c.yanked).collect();
+                let unmatched = seen.get(id).is_some_and(|cs| {
+                    cs.iter()
+                        .any(|c| !versions.iter().any(|v| c.matches(&v.version)))
+                });
+                if versions.is_empty() || !unmatched {
+                    continue;
+                }
+                let list: Vec<String> = versions
+                    .iter()
+                    .take(10)
+                    .map(|c| c.version.to_string())
+                    .collect();
+                let more = if versions.len() > 10 { ", ..." } else { "" };
+                text += &format!(
+                    "{id} has the versions {}{more} (newest first)\n",
+                    list.join(", ")
+                );
+            }
+            drop(cands);
             text += &DefaultStringReporter::report(&tree);
             return Err(ResolveError::NoSolution(text));
         }
@@ -576,6 +637,25 @@ pub fn resolve(input: &ResolveInput<'_>) -> Result<Lockfile, ResolveError> {
                     return Err(ResolveError::Registry(RegistryError::Invalid(format!(
                         "{id} {version} has no dist.sha256"
                     ))));
+                };
+                // The lock pins the archive of a version it keeps; a released
+                // id (`fpkg update <id>`) is not locked here and takes the
+                // registry's checksum.
+                let locked_sha = provider
+                    .locked(id)
+                    .filter(|l| matches!(l.source, Source::Registry(_)) && &l.version == version)
+                    .and_then(|l| l.sha256.clone());
+                let sha = match locked_sha {
+                    Some(locked) if locked.eq_ignore_ascii_case(&sha) => locked,
+                    Some(locked) => {
+                        return Err(ResolveError::ChecksumChanged {
+                            id: id.clone(),
+                            version: version.clone(),
+                            locked,
+                            registry: sha,
+                        });
+                    }
+                    None => sha,
                 };
                 let url = input
                     .registry

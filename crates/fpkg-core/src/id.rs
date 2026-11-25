@@ -56,6 +56,34 @@ impl PackageId {
     }
 }
 
+/// The candidate closest to `id` by edit distance, if it is a likely typo of
+/// it: at most two edits, and fewer than the shorter of the two has letters
+/// (`flx` for `flux`).
+pub fn nearest_id<'a>(id: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    candidates
+        .into_iter()
+        .filter(|c| *c != id)
+        .map(|c| (edit_distance(id, c), c))
+        .filter(|(d, c)| *d <= 2 && *d < id.len().min(c.len()))
+        .min()
+        .map(|(_, c)| c)
+}
+
+/// The Levenshtein distance of two strings.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
 impl fmt::Display for PackageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -110,5 +138,21 @@ mod tests {
         ] {
             assert!(!PackageId::is_valid(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn nearest_ids() {
+        let ids = ["flux", "flow", "sfs", "cable"];
+        assert_eq!(nearest_id("flx", ids), Some("flux"));
+        assert_eq!(nearest_id("cabel", ids), Some("cable"));
+        assert_eq!(nearest_id("flux", ids), Some("flow"), "never itself");
+        assert_eq!(nearest_id("sf", ids), Some("sfs"));
+        assert_eq!(nearest_id("ab", ["cd", "ax"]), Some("ax"));
+        assert_eq!(
+            nearest_id("ab", ["cd"]),
+            None,
+            "two edits of two letters is a guess"
+        );
+        assert_eq!(nearest_id("yaml", ids), None);
     }
 }

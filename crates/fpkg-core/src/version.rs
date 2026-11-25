@@ -313,8 +313,26 @@ impl Constraint {
         }
     }
 
-    /// What `fpkg add` writes by default: `~> <major>.<minor>`.
+    /// What `fpkg add` writes by default: `~> <major>.<minor>`, and for a
+    /// pre-release, which only a constraint naming it allows,
+    /// `>= <v>, < <major + 1>.0.0`.
     pub fn default_for(v: &Version) -> Self {
+        if v.is_prerelease() {
+            return Constraint {
+                comparators: vec![
+                    Comparator {
+                        op: Op::Ge,
+                        version: v.clone(),
+                        components: 3,
+                    },
+                    Comparator {
+                        op: Op::Lt,
+                        version: Version::new(v.major.saturating_add(1), 0, 0),
+                        components: 3,
+                    },
+                ],
+            };
+        }
         Constraint {
             comparators: vec![Comparator {
                 op: Op::Tilde,
@@ -604,6 +622,14 @@ mod tests {
             assert_eq!(c(&c(s).to_string()), c(s));
         }
         assert_eq!(Constraint::default_for(&v("7.0.9")).to_string(), "~> 7.0");
+        // A pre-release is allowed only by a constraint that names it.
+        let pre = Constraint::default_for(&v("0.1.0-dev"));
+        assert_eq!(pre.to_string(), ">= 0.1.0-dev, < 1.0.0");
+        for ok in ["0.1.0-dev", "0.1.0", "0.9.0"] {
+            assert!(pre.matches(&v(ok)), "{ok}");
+        }
+        assert!(!pre.matches(&v("1.0.0")));
+        assert_eq!(c(&pre.to_string()), pre);
     }
 
     #[test]

@@ -14,7 +14,7 @@ pub mod resolve;
 pub mod spec;
 pub mod version;
 
-pub use id::{IdError, PackageId};
+pub use id::{IdError, PackageId, nearest_id};
 pub use version::{Constraint, Version, VersionError};
 
 /// The version of fpkg itself, sent as the user agent.

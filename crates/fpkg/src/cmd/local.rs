@@ -19,33 +19,30 @@ use super::{Ctx, exit, exit_silent, split_at};
 use crate::output::{Style, table};
 use crate::{EXIT_FAILURE, EXIT_HUMAN};
 
-pub fn init(ctx: &Ctx) -> Result<()> {
-    match &ctx.project_flag {
-        Some(dir) => init_project(ctx, dir.clone()),
-        None => Err(exit(
-            EXIT_HUMAN,
-            "fpkg init needs --project [dir], the directory to turn into a project; fpkg new <kind> <name> scaffolds a schema, package, plugin or addon",
-        )),
-    }
-}
-
-fn init_project(ctx: &Ctx, dir: Option<PathBuf>) -> Result<()> {
-    let dir = match dir {
+/// `fpkg init [dir]`: the directory, else `--project`, else the current one.
+pub fn init(ctx: &Ctx, dir: Option<PathBuf>) -> Result<()> {
+    let dir = match dir.or_else(|| ctx.project_flag.clone()) {
         Some(d) => d,
-        None => std::env::current_dir()?,
+        None => super::cwd()?,
     };
     fs_err::create_dir_all(&dir)?;
     let dir = dir.canonicalize()?;
     let spec_path = dir.join(SPEC_FILE);
     if spec_path.exists() {
-        bail!("{} already exists", spec_path.display());
+        return Err(exit(
+            EXIT_HUMAN,
+            format!("{} already exists", spec_path.display()),
+        ));
     }
+    let enclosing = dir
+        .parent()
+        .and_then(|parent| Project::discover(parent).ok());
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Project".into());
     let text = format!(
-        "Package:describe(function(s)\n  s.name        = {}\n  s.version     = '0.1.0'\n  s.date        = '{}'\n  s.summary     = ''\n  s.authors     = {{ {} }}\nend)\n",
+        "Package:describe(function(s)\n  s.name        = {}\n  s.version     = '0.1.0'\n  s.date        = '{}'\n  s.summary     = ''\n  s.authors     = {{ {} }}\n  s.license     = 'MIT'\nend)\n",
         lua_str(&name),
         today(),
         lua_str(&author())
@@ -59,6 +56,15 @@ fn init_project(ctx: &Ctx, dir: Option<PathBuf>) -> Result<()> {
             dir.display()
         ),
     );
+    if let Some(outer) = enclosing {
+        ctx.out.warn(&format!(
+            "{} is inside the project {} ({}), and is now a project of its own that fpkg finds first from inside it; for a package of {}, delete {SPEC_FILE} and {PACKAGES_DIR}/ again and run fpkg new package <name> there",
+            dir.display(),
+            outer.id,
+            outer.root.display(),
+            outer.id
+        ));
+    }
     if fpkg_core::project::gamemode_name(&dir).is_some() {
         ctx.out.note("it has a gamemode <name>.txt, so it is a gamemode project: add s.depends('flux', '~> 0.9') and run fpkg install");
     } else {
@@ -118,6 +124,12 @@ fn list_one(ctx: &Ctx, project: &Project) -> Result<()> {
         ctx.emit_json(json!(v));
         return Ok(());
     }
+    if rows.is_empty() {
+        ctx.out.note(&format!(
+            "nothing installed in {PACKAGES_DIR}/; run fpkg install"
+        ));
+        return Ok(());
+    }
     let mut t = vec![vec![
         "ID".into(),
         "VERSION".into(),
@@ -158,11 +170,22 @@ fn source_note(s: &Source, verbose: bool) -> String {
     }
 }
 
-fn tree_json(lock: &Lockfile, id: &str) -> serde_json::Value {
+/// The tree below `id`; `above` holds the ids on the way to it, so that a
+/// cycle ends in `"cycle": true` instead of recursing.
+fn tree_json(lock: &Lockfile, id: &str, above: &mut Vec<String>) -> serde_json::Value {
     let Some(p) = lock.get(id) else {
         return json!({ "id": id });
     };
-    let deps: Vec<_> = p.dependencies.iter().map(|d| tree_json(lock, d)).collect();
+    if above.iter().any(|a| a == id) {
+        return json!({ "id": id, "version": p.version.to_string(), "cycle": true });
+    }
+    above.push(id.to_string());
+    let deps: Vec<_> = p
+        .dependencies
+        .iter()
+        .map(|d| tree_json(lock, d, above))
+        .collect();
+    above.pop();
     json!({ "id": id, "version": p.version.to_string(), "source": p.source.to_string(), "dependencies": deps })
 }
 
@@ -232,7 +255,7 @@ pub fn tree(ctx: &Ctx, id: Option<String>) -> Result<()> {
             bail!("{id} is not in the dependency graph");
         }
         if ctx.out.json {
-            ctx.out.json(&tree_json(&lock, &id));
+            ctx.out.json(&tree_json(&lock, &id, &mut Vec::new()));
         } else {
             print_tree(
                 &lock,
@@ -263,8 +286,14 @@ pub fn tree(ctx: &Ctx, id: Option<String>) -> Result<()> {
         .map(|p| p.id.clone())
         .collect();
     if ctx.out.json {
-        let deps: Vec<_> = direct.iter().map(|d| tree_json(&lock, d)).collect();
-        let other: Vec<_> = others.iter().map(|d| tree_json(&lock, d)).collect();
+        let deps: Vec<_> = direct
+            .iter()
+            .map(|d| tree_json(&lock, d, &mut Vec::new()))
+            .collect();
+        let other: Vec<_> = others
+            .iter()
+            .map(|d| tree_json(&lock, d, &mut Vec::new()))
+            .collect();
         ctx.out.json(&json!({
             "id": project.id, "version": loaded.root.version.to_string(),
             "dependencies": deps, "unreferenced": other,
@@ -289,7 +318,7 @@ pub fn tree(ctx: &Ctx, id: Option<String>) -> Result<()> {
         println!(
             "{}",
             ctx.out
-                .paint(Style::Dim, "not depended on by the project manifest:")
+                .paint_stdout(Style::Dim, "not depended on by the project manifest:")
         );
         for o in &others {
             print_tree(&lock, o, "", true, &mut seen, ctx.out.verbose, true);
@@ -524,6 +553,8 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
         };
         layout.push(spec::Diagnostic { severity, message });
     }
+    // The root spec is evaluated once: its path dependencies are targets too.
+    let mut root = None;
     if ids.is_empty() {
         // The project manifest, every workspace package (linked and nested
         // too), every path package; installed registry packages with --all.
@@ -536,29 +567,42 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
         for p in &scan.nested {
             targets.push(project.location(p));
         }
-        let root = spec::load(&project.root_location(), ctx.env);
-        if let Ok(root) = &root {
-            for d in root.dependencies.iter().filter(|d| d.kind == DepKind::Path) {
-                let rel = d.id.trim_end_matches('/');
-                if let (Some(id), Ok(dir)) = (d.package_id(), project.root.join(rel).canonicalize())
-                {
-                    targets.push(project.location_of(dir, id, project.path_dep_lua_path(rel)));
+        let loaded = spec::load(&project.root_location(), ctx.env);
+        if let Ok(m) = &loaded {
+            // One that cannot be loaded is an error of the project manifest.
+            for d in m.dependencies.iter().filter(|d| d.kind == DepKind::Path) {
+                if let Ok((_, loc)) = project.path_dep(d) {
+                    targets.push(loc);
                 }
             }
         }
+        root = Some(loaded);
     } else {
         for id in ids {
             match local_location(&project, id)? {
                 Some((loc, _)) => targets.push(loc),
                 None => {
-                    bail!("{id} is not a package of this project (no packages/{id}/{SPEC_FILE})")
+                    return Err(exit(
+                        EXIT_HUMAN,
+                        format!(
+                            "{id} is not a package of this project (no packages/{id}/{SPEC_FILE})"
+                        ),
+                    ));
                 }
             }
         }
     }
+    let loaded: Vec<_> = match root {
+        Some(r) => std::iter::once(r)
+            .chain(spec::load_many(&targets[1..], ctx.env))
+            .collect(),
+        None => spec::load_many(&targets, ctx.env),
+    };
+    let mut unknown = UnknownDeps::new(ctx, &project, &scan);
     let mut results = Vec::new();
     let mut failed = 0;
-    for (loc, loaded) in targets.iter().zip(spec::load_many(&targets, ctx.env)) {
+    let mut warned = 0;
+    for (loc, loaded) in targets.iter().zip(loaded) {
         let label = if loc.is_project_manifest {
             format!("{} (project manifest)", loc.id)
         } else {
@@ -569,7 +613,9 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
                 for line in &m.output {
                     ctx.out.verbose(&format!("{}: print: {line}", loc.id));
                 }
-                (Some(m.version.to_string()), spec::check(&m, loc))
+                let mut diags = spec::check(&m, loc);
+                diags.extend(unknown.check(&m));
+                (Some(m.version.to_string()), diags)
             }
             Err(e) => (
                 None,
@@ -588,14 +634,19 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
             .iter()
             .filter(|d| d.severity == Severity::Error)
             .count();
+        let warnings = diags.len() - errors;
         if errors > 0 {
             failed += 1;
+        } else if warnings > 0 {
+            warned += 1;
         }
-        if !ctx.out.json {
+        // A package without problems is listed with -v only.
+        let shown = errors > 0 || (warnings > 0 && !ctx.out.quiet) || ctx.out.verbose;
+        if !ctx.out.json && shown {
             let tag = if errors > 0 {
-                ctx.out.paint(Style::Red, "error")
+                ctx.out.paint_stdout(Style::Red, "error")
             } else {
-                ctx.out.paint(Style::Green, "   ok")
+                ctx.out.paint_stdout(Style::Green, "   ok")
             };
             println!("{tag}  {label} {}", version.as_deref().unwrap_or(""));
             for d in &diags {
@@ -603,8 +654,8 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
                     continue;
                 }
                 let s = match d.severity {
-                    Severity::Error => ctx.out.paint(Style::Red, "error:"),
-                    Severity::Warning => ctx.out.paint(Style::Yellow, "warning:"),
+                    Severity::Error => ctx.out.paint_stdout(Style::Red, "error:"),
+                    Severity::Warning => ctx.out.paint_stdout(Style::Yellow, "warning:"),
                 };
                 println!("         {s} {}", d.message);
             }
@@ -616,8 +667,13 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
     if ctx.out.json {
         ctx.out.json(&json!(results));
     } else {
+        let warnings = if warned > 0 && !ctx.out.quiet {
+            format!(", {warned} with warnings")
+        } else {
+            String::new()
+        };
         ctx.out.note(&format!(
-            "{} checked, {} with errors",
+            "{} checked, {} with errors{warnings}",
             targets.len(),
             failed
         ));
@@ -626,6 +682,84 @@ pub fn check(ctx: &Ctx, ids: &[String], all: bool) -> Result<()> {
         Err(exit_silent(EXIT_FAILURE))
     } else {
         Ok(())
+    }
+}
+
+/// Finds the package dependencies that nothing provides: not a package of
+/// the project, not in its lock, and not on the registry (asked only for
+/// such an id, and never offline; a registry that cannot be reached is no
+/// finding).
+struct UnknownDeps {
+    known: BTreeSet<String>,
+    registries: Option<fpkg_core::registry::Registries>,
+    url: String,
+    asked: BTreeMap<String, bool>,
+}
+
+impl UnknownDeps {
+    fn new(ctx: &Ctx, project: &Project, scan: &fpkg_core::project::Scan) -> UnknownDeps {
+        let mut known: BTreeSet<String> = scan
+            .top
+            .iter()
+            .chain(&scan.nested)
+            .map(|p| p.id.clone())
+            .collect();
+        known.insert(project.id.clone());
+        if let Ok(Some(lock)) = Lockfile::read(&project.lock_path()) {
+            known.extend(lock.packages.into_iter().map(|p| p.id));
+        }
+        let registries = (!ctx.offline)
+            .then(|| ctx.config(Some(project)).ok())
+            .flatten()
+            .filter(|c| !c.offline)
+            .and_then(|c| ctx.registries(&c).ok());
+        let url = registries
+            .as_ref()
+            .map(|r| r.default_url().to_string())
+            .unwrap_or_default();
+        UnknownDeps {
+            known,
+            registries,
+            url,
+            asked: BTreeMap::new(),
+        }
+    }
+
+    fn on_registry(&mut self, id: &str) -> bool {
+        if let Some(found) = self.asked.get(id) {
+            return *found;
+        }
+        let found = match (&self.registries, PackageId::new(id)) {
+            (Some(r), Ok(pid)) => !matches!(
+                r.default_registry().and_then(|reg| reg.package(&pid)),
+                Ok(None)
+            ),
+            _ => true,
+        };
+        self.asked.insert(id.to_string(), found);
+        found
+    }
+
+    fn check(&mut self, m: &Manifest) -> Vec<spec::Diagnostic> {
+        let mut out = Vec::new();
+        for d in m.dependencies.iter().filter(|d| d.kind == DepKind::Package) {
+            if self.known.contains(&d.id) || !PackageId::is_valid(&d.id) || self.on_registry(&d.id)
+            {
+                continue;
+            }
+            let candidates = self.known.iter().map(String::as_str).chain(["flux"]);
+            let hint = fpkg_core::nearest_id(&d.id, candidates)
+                .map(|n| format!("; did you mean {n}?"))
+                .unwrap_or_default();
+            out.push(spec::Diagnostic {
+                severity: Severity::Warning,
+                message: format!(
+                    "dependency '{}' is not a package of the project, not in fpkg.lock and not on {}{hint}",
+                    d.id, self.url
+                ),
+            });
+        }
+        out
     }
 }
 
@@ -749,10 +883,16 @@ pub fn pack(ctx: &Ctx, id: Option<String>, out: Option<PathBuf>, list: bool) -> 
     let p = checked_manifest(ctx, &project, &id)?;
     let packed = archive::pack(&p.location.dir, &id, &pack_options(ctx, &project, &p)?)?;
     let m = &p.manifest;
-    let dir = out.unwrap_or_else(|| project.root.join("target").join("fpkg"));
-    fs_err::create_dir_all(&dir)?;
-    let path = dir.join(format!("{id}-{}.zip", m.version));
-    fs_err::write(&path, &packed.bytes)?;
+    // --list shows what the archive would hold, and writes nothing.
+    let path = if list {
+        None
+    } else {
+        let dir = out.unwrap_or_else(|| project.root.join("target").join("fpkg"));
+        fs_err::create_dir_all(&dir)?;
+        let path = dir.join(format!("{id}-{}.zip", m.version));
+        fs_err::write(&path, &packed.bytes)?;
+        Some(path)
+    };
     if ctx.out.json {
         ctx.out.json(&json!({
             "id": id, "version": m.version.to_string(), "path": path, "sha256": packed.sha256,
@@ -760,7 +900,9 @@ pub fn pack(ctx: &Ctx, id: Option<String>, out: Option<PathBuf>, list: bool) -> 
         }));
         return Ok(());
     }
-    println!("{}", path.display());
+    if let Some(path) = &path {
+        println!("{}", path.display());
+    }
     println!("sha256 {}", packed.sha256);
     if list {
         let rows: Vec<Vec<String>> = packed

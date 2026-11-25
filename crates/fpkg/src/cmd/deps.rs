@@ -2,17 +2,17 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{Result, anyhow, bail};
-use fpkg_core::install::{self, Event, InstallOptions, load};
+use anyhow::{Context, Result, anyhow, bail};
+use fpkg_core::install::{self, Event, InstallOptions, Loaded, load};
 use fpkg_core::lockfile::Lockfile;
 use fpkg_core::project::Project;
 use fpkg_core::registry::{Registries, Registry};
 use fpkg_core::resolve::Release;
-use fpkg_core::spec::{self, DepKind, Dependency, SPEC_FILE};
+use fpkg_core::spec::{self, DepKind, Manifest, SPEC_FILE};
 use fpkg_core::{Constraint, PackageId};
 use serde_json::json;
 
-use super::{Ctx, exit, exit_silent, split_at};
+use super::{Ctx, exit, exit_silent, split_at, usage_id};
 use crate::edit::{self, EditError};
 use crate::{EXIT_HUMAN, EXIT_VERIFY};
 
@@ -36,6 +36,16 @@ fn print_changes(ctx: &Ctx, old: Option<&Lockfile>, new: &Lockfile) {
             Some(o) if o.source != p.source => ctx.out.status(
                 "Updating",
                 &format!("{} {} ({} -> {})", p.id, p.version, o.source, p.source),
+            ),
+            Some(o) if o.sha256 != p.sha256 => ctx.out.status(
+                "Updating",
+                &format!(
+                    "{} {} (checksum {} -> {})",
+                    p.id,
+                    p.version,
+                    o.sha256.as_deref().unwrap_or("none"),
+                    p.sha256.as_deref().unwrap_or("none")
+                ),
             ),
             Some(_) => {}
         }
@@ -62,12 +72,13 @@ fn lock_json(lock: &Lockfile) -> serde_json::Value {
 /// Resolves (keeping what `release` does not release) and writes the lock.
 /// Unmarked directories count as workspace packages: locking is how a hand
 /// copy becomes a deliberate shadow of a registry package.
+/// Returns the lock as it was and the new one.
 fn relock(
     ctx: &Ctx,
     project: &Project,
     registries: &Registries,
     release: Release,
-) -> Result<Lockfile> {
+) -> Result<(Option<Lockfile>, Lockfile)> {
     let old = Lockfile::read(&project.lock_path())?;
     let loaded = load(project, ctx.env, None)?;
     let new = loaded.resolve(old.as_ref(), release, registries)?;
@@ -75,13 +86,13 @@ fn relock(
     if old.as_ref() != Some(&new) || !project.lock_path().exists() {
         new.write(&project.lock_path())?;
     }
-    Ok(new)
+    Ok((old, new))
 }
 
 pub fn lock(ctx: &Ctx) -> Result<()> {
     let project = ctx.project()?;
     let registries = registries_for(ctx, &project)?;
-    let new = relock(ctx, &project, &registries, Release::None)?;
+    let (_, new) = relock(ctx, &project, &registries, Release::None)?;
     if ctx.out.json {
         ctx.out.json(&lock_json(&new));
     } else {
@@ -100,14 +111,20 @@ pub fn update(ctx: &Ctx, ids: &[String]) -> Result<()> {
         let old = Lockfile::read(&project.lock_path())?;
         for id in ids {
             if old.as_ref().and_then(|l| l.get(id)).is_none() {
-                bail!("{id} is not in fpkg.lock");
+                return Err(exit(EXIT_HUMAN, format!("{id} is not in fpkg.lock")));
             }
         }
         Release::Ids(ids.iter().cloned().collect::<BTreeSet<_>>())
     };
-    let new = relock(ctx, &project, &registries, release)?;
+    let (old, new) = relock(ctx, &project, &registries, release)?;
     if ctx.out.json {
         ctx.out.json(&lock_json(&new));
+    } else if old.as_ref() == Some(&new) {
+        ctx.out.note(
+            "fpkg.lock is up to date: the locked versions are the newest the constraints allow",
+        );
+    } else {
+        ctx.out.note("next: fpkg install");
     }
     Ok(())
 }
@@ -124,7 +141,8 @@ fn install_with(
         Event::Resolving => out.status("Resolving", "dependencies"),
         Event::LockWritten => out.status("Locking", "fpkg.lock"),
         Event::Fetching { id, version } => out.status("Installing", &format!("{id} {version}")),
-        Event::Removing { id, version } => out.status("Removing", &format!("{id} {version} (no longer in fpkg.lock)")),
+        Event::Removing { id, version, replaced_by: Some(dir) } => out.status("Removing", &format!("{id} {version} (replaced by {dir})")),
+        Event::Removing { id, version, replaced_by: None } => out.status("Removing", &format!("{id} {version} (no longer in fpkg.lock)")),
         Event::Replacing { id } => out.warn(&format!("replacing packages/{id}, which has no .fpkg.toml marker (--force)")),
         Event::Repairing { id, version } => {
             out.status("Repairing", &format!("{id} {version} (its files no longer match the install)"))
@@ -136,6 +154,8 @@ fn install_with(
             out.warn(&format!("{path} is no longer provided by any package but was changed after install; left in place"))
         }
         Event::SkippedSymlink { path } => out.warn(&format!("{} is a symlink; not copied", path.display())),
+        Event::OtherPlatform { name, package } => out.verbose(&format!("not copying {name} ({package}): the server's binaries are for another platform")),
+        Event::CreatedDir { path } => out.status("Created", &format!("{}, where Flux writes its generated files", path.display())),
     }
     };
     let report = install::install(project, opts, registries, &mut progress)?;
@@ -143,15 +163,21 @@ fn install_with(
         out.verbose(&format!("fpkg.lock was stale: {s}"));
     }
     if !report.binaries_skipped.is_empty() {
-        let list = report
-            .binaries_skipped
+        let mut per_package: std::collections::BTreeMap<&str, usize> = Default::default();
+        for (package, _) in &report.binaries_skipped {
+            *per_package.entry(package).or_default() += 1;
+        }
+        let list = per_package
             .iter()
-            .map(|(p, n)| format!("{n} ({p})"))
+            .map(|(p, n)| format!("{p} ({n} {})", if *n == 1 { "module" } else { "modules" }))
             .collect::<Vec<_>>()
             .join(", ");
         out.note(&format!(
-            "note: binary modules were not copied to garrysmod/lua/bin/, because the server folder is not known: {list}\n      run fpkg install inside the server folder, or pass --server <server folder>"
+            "note: the server folder is not known, so the binary modules of {list} were not copied to garrysmod/lua/bin/\n      (fpkg install -v names them); run fpkg install in the server folder, or pass --server <dir>"
         ));
+        for (package, name) in &report.binaries_skipped {
+            out.verbose(&format!("not copied: {name} ({package})"));
+        }
     }
     Ok(report)
 }
@@ -175,7 +201,7 @@ fn print_report(ctx: &Ctx, r: &install::InstallReport) {
             .collect();
         ctx.emit_json(json!({
             "added": pairs(&r.added), "updated": updated, "repaired": pairs(&r.repaired),
-            "removed": pairs(&r.removed), "unchanged": pairs(&r.unchanged), "lock_written": r.lock_written,
+            "removed": pairs(&r.removed), "unchanged": pairs(&r.unchanged), "local": pairs(&r.local), "lock_written": r.lock_written,
             "files_written": r.files_written, "files_removed": r.files_removed, "files_kept": r.files_kept,
             "binaries_skipped": skipped,
         }));
@@ -186,8 +212,13 @@ fn print_report(ctx: &Ctx, r: &install::InstallReport) {
     } else {
         format!("{} repaired, ", r.repaired.len())
     };
+    let local = if r.local.is_empty() {
+        String::new()
+    } else {
+        format!(", {} local", r.local.len())
+    };
     ctx.out.note(&format!(
-        "{} added, {} updated, {repaired}{} removed, {} unchanged",
+        "{} added, {} updated, {repaired}{} removed, {} unchanged{local}",
         r.added.len(),
         r.updated.len(),
         r.removed.len(),
@@ -289,7 +320,7 @@ fn verify_one(ctx: &Ctx, project: &Project) -> Result<()> {
 fn manual_edit(
     ctx: &Ctx,
     project: &Project,
-    e: &EditError,
+    e: &dyn std::fmt::Display,
     what: &str,
     line: &str,
 ) -> anyhow::Error {
@@ -301,36 +332,75 @@ fn manual_edit(
     exit_silent(EXIT_HUMAN)
 }
 
-/// Writes the edited manifest if it evaluates.
-fn write_manifest(ctx: &Ctx, project: &Project, new: &str) -> Result<()> {
-    let path = project.manifest_path();
-    // Evaluate the edited text first, from a temporary file beside it.
+/// What the edited manifest text evaluates to, from a temporary file beside
+/// the manifest; the manifest itself is not touched.
+fn evaluate_edit(ctx: &Ctx, project: &Project, new: &str) -> Result<Manifest> {
     let tmp = tempfile::NamedTempFile::new_in(&project.root)?;
     fs_err::write(tmp.path(), new)?;
-    if let Err(e) = spec::load_file(&project.root_location(), ctx.env, tmp.path()) {
-        bail!("the edited {SPEC_FILE} would not evaluate, so it was left as it was: {e}");
-    }
-    fs_err::write(&path, new)?;
+    spec::load_file(&project.root_location(), ctx.env, tmp.path()).map_err(|e| {
+        anyhow!("the edited {SPEC_FILE} would not evaluate, so it was left as it was: {e}")
+    })
+}
+
+/// Replaces the manifest atomically, keeping its permissions.
+fn write_manifest(project: &Project, new: &str) -> Result<()> {
+    let path = project.manifest_path();
+    let permissions = fs_err::metadata(&path)?.permissions();
+    fpkg_core::lockfile::write_atomic(&path, new.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))?;
+    fs_err::set_permissions(&path, permissions)?;
+    Ok(())
+}
+
+/// The end of `add` and `remove`: the manifest, then the lock, then install.
+fn write_and_install(
+    ctx: &Ctx,
+    project: &Project,
+    registries: &Registries,
+    manifest: &str,
+    old: Option<&Lockfile>,
+    lock: &Lockfile,
+) -> Result<()> {
+    write_manifest(project, manifest)?;
+    print_changes(ctx, old, lock);
+    lock.write(&project.lock_path())?;
+    let report = install_with(
+        ctx,
+        project,
+        registries,
+        InstallOptions {
+            locked: false,
+            force: false,
+            env: ctx.env,
+        },
+    )?;
+    print_report(ctx, &report);
     Ok(())
 }
 
 pub fn add(ctx: &Ctx, spec_arg: &str) -> Result<()> {
     let (id, constraint) = split_at(spec_arg);
-    PackageId::new(id)?;
+    usage_id(id)?;
     let project = ctx.project()?;
     let loaded = load(&project, ctx.env, None)?;
-    if loaded
+    let existing = loaded
         .root
         .dependencies
         .iter()
-        .any(|d| d.kind == DepKind::Package && d.id == id)
-    {
-        bail!("the project already depends on {id}");
-    }
+        .find(|d| d.kind == DepKind::Package && d.id == id)
+        .map(|d| d.constraint.clone());
     let registries = registries_for(ctx, &project)?;
-    let constraint = match constraint {
-        Some(c) => Constraint::parse(c)?,
-        None => {
+    let constraint = match (constraint, &existing) {
+        (None, Some(c)) => {
+            return Err(exit(
+                EXIT_HUMAN,
+                format!(
+                    "the project already depends on {id} {c}; fpkg add {id}@<constraint> changes the constraint"
+                ),
+            ));
+        }
+        (Some(c), _) => Constraint::parse(c).map_err(|e| exit(EXIT_HUMAN, e.to_string()))?,
+        (None, None) => {
             let version = match loaded.workspace.get(id) {
                 Some(m) => m.version.clone(),
                 None => {
@@ -349,49 +419,56 @@ pub fn add(ctx: &Ctx, spec_arg: &str) -> Result<()> {
         }
     };
     let c = constraint.to_string();
+    if existing.as_ref() == Some(&constraint) {
+        ctx.out
+            .note(&format!("the project already depends on {id} {c}"));
+        return Ok(());
+    }
     let src = fs_err::read_to_string(project.manifest_path())?;
     let line = edit::depends_line("s", "", '\'', id, Some(&c));
-    let new = match edit::add(&src, id, Some(&c)) {
+    let edited = match &existing {
+        Some(_) => edit::set_constraint(&src, id, &c),
+        None => edit::add(&src, id, Some(&c)),
+    };
+    let new = match edited {
         Ok(n) => n,
         Err(e @ EditError::AlreadyPresent(_)) => bail!("{e}"),
         Err(e) => return Err(manual_edit(ctx, &project, &e, "Add this line", &line)),
     };
-    // Resolve with the dependency added in memory; the manifest is written
+    // Resolve what the edited text evaluates to; the manifest is written
     // only once that succeeded.
+    let root = evaluate_edit(ctx, &project, &new)?;
+    if !root
+        .dependencies
+        .iter()
+        .any(|d| d.kind == DepKind::Package && d.id == id && d.constraint == constraint)
+    {
+        let why = format!(
+            "the edited file does not depend on {id} {c} when it is evaluated (is the line inside a block comment?)"
+        );
+        return Err(manual_edit(ctx, &project, &why, "Add this line", &line));
+    }
     let old = Lockfile::read(&project.lock_path())?;
-    let mut with = loaded.clone();
-    with.root.dependencies.push(Dependency {
-        id: id.to_string(),
-        constraint: constraint.clone(),
-        kind: DepKind::Package,
-    });
+    let with = Loaded { root, ..loaded };
     let new_lock = with.resolve(old.as_ref(), Release::None, &registries)?;
-    write_manifest(ctx, &project, &new)?;
-    ctx.out
-        .status("Adding", &format!("{id} {c} to {SPEC_FILE}"));
-    print_changes(ctx, old.as_ref(), &new_lock);
-    new_lock.write(&project.lock_path())?;
-    let report = install_with(
-        ctx,
-        &project,
-        &registries,
-        InstallOptions {
-            locked: false,
-            force: false,
-            env: ctx.env,
-        },
-    )?;
-    print_report(ctx, &report);
-    Ok(())
+    match &existing {
+        Some(before) => ctx
+            .out
+            .status("Changing", &format!("{id} {before} -> {c} in {SPEC_FILE}")),
+        None => ctx
+            .out
+            .status("Adding", &format!("{id} {c} to {SPEC_FILE}")),
+    }
+    write_and_install(ctx, &project, &registries, &new, old.as_ref(), &new_lock)
 }
 
 pub fn remove(ctx: &Ctx, id: &str) -> Result<()> {
-    PackageId::new(id)?;
+    usage_id(id)?;
     let project = ctx.project()?;
     let src = fs_err::read_to_string(project.manifest_path())?;
     let new = match edit::remove(&src, id) {
         Ok(n) => n,
-        Err(e @ EditError::NotPresent(_)) => bail!("{e}"),
+        Err(e @ EditError::NotPresent(_)) => return Err(exit(EXIT_HUMAN, e.to_string())),
         Err(e) => {
             return Err(manual_edit(
                 ctx,
@@ -402,31 +479,28 @@ pub fn remove(ctx: &Ctx, id: &str) -> Result<()> {
             ));
         }
     };
-    // As for add: resolve without the dependency first, write afterwards.
+    // As for add: resolve what the edited text evaluates to, write afterwards.
     let loaded = load(&project, ctx.env, None)?;
+    let root = evaluate_edit(ctx, &project, &new)?;
+    if root
+        .dependencies
+        .iter()
+        .any(|d| d.kind != DepKind::File && d.package_id() == Some(id))
+    {
+        let why = format!("the edited file still depends on {id} when it is evaluated");
+        return Err(manual_edit(
+            ctx,
+            &project,
+            &why,
+            "Remove the s.depends line for",
+            id,
+        ));
+    }
     let registries = registries_for(ctx, &project)?;
     let old = Lockfile::read(&project.lock_path())?;
-    let mut without = loaded.clone();
-    without
-        .root
-        .dependencies
-        .retain(|d| !(d.kind != DepKind::File && d.package_id() == Some(id)));
+    let without = Loaded { root, ..loaded };
     let new_lock = without.resolve(old.as_ref(), Release::None, &registries)?;
-    write_manifest(ctx, &project, &new)?;
     ctx.out
         .status("Removing", &format!("{id} from {SPEC_FILE}"));
-    print_changes(ctx, old.as_ref(), &new_lock);
-    new_lock.write(&project.lock_path())?;
-    let report = install_with(
-        ctx,
-        &project,
-        &registries,
-        InstallOptions {
-            locked: false,
-            force: false,
-            env: ctx.env,
-        },
-    )?;
-    print_report(ctx, &report);
-    Ok(())
+    write_and_install(ctx, &project, &registries, &new, old.as_ref(), &new_lock)
 }

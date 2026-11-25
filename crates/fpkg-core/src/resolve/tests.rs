@@ -156,6 +156,7 @@ fn run(
         project: ("flux", &v),
         root_deps: &root,
         workspace: &workspace,
+        nested: &BTreeSet::new(),
         paths: &paths,
         lock,
         release,
@@ -185,6 +186,7 @@ fn resolves_flux_ce_workspace_without_a_registry() {
         project: ("flux", &rm.version),
         root_deps: &rm.dependencies,
         workspace: &ws,
+        nested: &BTreeSet::new(),
         paths: &paths,
         lock: None,
         release: Release::None,
@@ -328,6 +330,67 @@ fn yanked_pin_survives_but_new_resolutions_skip_it() {
 }
 
 #[test]
+fn a_locked_checksum_is_kept_until_an_update() {
+    let mut reg = Mem::default();
+    reg.add("sfs", "7.0.9", false, &[])
+        .add("yaml", "1.2.0", false, &[]);
+    let lock = run(&[("sfs", "~> 7.0")], &[], &reg, None, Release::None).unwrap();
+    let locked = lock.get("sfs").unwrap().sha256.clone().unwrap();
+    let swapped = "f".repeat(64);
+    reg.0
+        .get_mut("sfs")
+        .unwrap()
+        .versions
+        .get_mut("7.0.9")
+        .unwrap()
+        .dist
+        .as_mut()
+        .unwrap()
+        .sha256 = swapped.clone();
+    // An unrelated change re-resolves: the swapped archive is refused.
+    let root = [("sfs", "~> 7.0"), ("yaml", "*")];
+    for release in [Release::None, Release::Ids(["yaml".to_string()].into())] {
+        match run(&root, &[], &reg, Some(&lock), release) {
+            Err(ResolveError::ChecksumChanged {
+                id,
+                locked: l,
+                registry,
+                ..
+            }) => assert_eq!(
+                (id.as_str(), l, registry),
+                ("sfs", locked.clone(), swapped.clone())
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+    // fpkg update sfs takes it.
+    let updated = run(
+        &root,
+        &[],
+        &reg,
+        Some(&lock),
+        Release::Ids(["sfs".to_string()].into()),
+    )
+    .unwrap();
+    assert_eq!(
+        updated.get("sfs").unwrap().sha256.as_deref(),
+        Some(swapped.as_str())
+    );
+    // A checksum that differs in case only is the locked one.
+    let mut upper = lock.clone();
+    upper.packages.iter_mut().for_each(|p| {
+        if p.id == "sfs" {
+            p.sha256 = Some(swapped.to_ascii_uppercase());
+        }
+    });
+    let kept = run(&root, &[], &reg, Some(&upper), Release::None).unwrap();
+    assert_eq!(
+        kept.get("sfs").unwrap().sha256,
+        Some(swapped.to_ascii_uppercase())
+    );
+}
+
+#[test]
 fn conflict_is_explained() {
     let mut reg = Mem::default();
     reg.add("active_ui", "1.0.0", false, &[])
@@ -379,6 +442,28 @@ fn missing_package_is_named() {
             .contains("nope is not a local package and not on the registry https://fluxpkg.dev/"),
         "{e}"
     );
+    // A typo gets the nearest id, a constraint nothing meets the versions.
+    let mut reg = Mem::default();
+    reg.add("gmsv_pg", "2.0.0", false, &[])
+        .add("gmsv_pg", "1.1.0", false, &[])
+        .add("gmsv_pg", "1.0.0", true, &[]);
+    let e = run(&[("flx", "*")], &[], &reg, None, Release::None).unwrap_err();
+    assert!(e.to_string().contains("; did you mean flux?"), "{e}");
+    let e = run(
+        &[("gmsv_pgg", "*"), ("gmsv_pg", "*")],
+        &[],
+        &reg,
+        None,
+        Release::None,
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("; did you mean gmsv_pg?"), "{e}");
+    let e = run(&[("gmsv_pg", "== 1.0.0")], &[], &reg, None, Release::None).unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("gmsv_pg has the versions 2.0.0, 1.1.0 (newest first)"),
+        "{e}"
+    );
 }
 
 #[test]
@@ -419,6 +504,7 @@ fn offline_lists_missing_ids() {
         project: ("p", &v),
         root_deps: &root,
         workspace: &ws,
+        nested: &BTreeSet::new(),
         paths: &paths,
         lock: None,
         release: Release::None,

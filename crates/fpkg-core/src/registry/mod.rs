@@ -738,12 +738,9 @@ impl Registries {
             return Ok(r.clone());
         }
         let inner = open(&url, &self.net)?;
-        let r = std::rc::Rc::new(CachedRegistry::new(
-            inner,
-            &self.cache_root,
-            &url,
-            self.offline,
-        ));
+        // A file:// registry (a mirror on an air-gapped server) needs no network.
+        let offline = self.offline && !url.starts_with("file:");
+        let r = std::rc::Rc::new(CachedRegistry::new(inner, &self.cache_root, &url, offline));
         self.opened.borrow_mut().insert(url, r.clone());
         Ok(r)
     }

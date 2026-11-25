@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use fpkg_core::PackageId;
 use fpkg_core::project::{self, Marker, PACKAGES_DIR};
 use fpkg_core::spec::{self, SPEC_FILE};
 use serde_json::json;
 
-use super::{Ctx, exit};
+use super::{Ctx, exit, usage_id};
 use crate::EXIT_HUMAN;
 use crate::output::table;
 
@@ -169,11 +169,17 @@ pub fn link(ctx: &Ctx, dir: &Path, as_id: Option<String>, force: bool) -> Result
 
 /// `fpkg unlink <id>`.
 pub fn unlink(ctx: &Ctx, id: &str) -> Result<()> {
+    usage_id(id)?;
     let project = ctx.project()?;
     let link = project.package_dir(id);
     let shown = format!("{PACKAGES_DIR}/{id}");
     match std::fs::symlink_metadata(&link) {
-        Err(_) => bail!("{shown} does not exist"),
+        Err(_) => {
+            return Err(exit(
+                EXIT_HUMAN,
+                format!("{shown} does not exist (fpkg link lists the links)"),
+            ));
+        }
         Ok(meta) if !meta.file_type().is_symlink() => {
             return Err(exit(
                 EXIT_HUMAN,
@@ -189,11 +195,30 @@ pub fn unlink(ctx: &Ctx, id: &str) -> Result<()> {
         .status("Unlinked", &format!("{shown} (was {})", target.display()));
     if ctx.out.json {
         ctx.out.json(&json!({ "id": id, "target": target }));
-    } else {
+    } else if needed(ctx, &project, id) {
         ctx.out
             .note("next: fpkg install, which fetches the registry version");
+    } else {
+        ctx.out.note(&format!(
+            "next: fpkg install; nothing depends on {id}, so it leaves fpkg.lock"
+        ));
     }
     Ok(())
+}
+
+/// Whether the project manifest, or a package of the lock, depends on `id`.
+fn needed(ctx: &Ctx, project: &project::Project, id: &str) -> bool {
+    let direct = spec::load(&project.root_location(), ctx.env)
+        .is_ok_and(|m| m.package_deps().any(|d| d.package_id() == Some(id)));
+    let locked = fpkg_core::lockfile::Lockfile::read(&project.lock_path())
+        .ok()
+        .flatten()
+        .is_some_and(|l| {
+            l.packages
+                .iter()
+                .any(|p| p.id != id && p.dependencies.iter().any(|d| d == id))
+        });
+    direct || locked
 }
 
 /// `fpkg link` without arguments: the links in `packages/`.

@@ -5,9 +5,11 @@ A schema for the Flux framework.
 {{docker_readme}}## Running it on a server without Docker
 
 Put this repository into `garrysmod/gamemodes` of the server, in a folder named `{{id}}`, run
-`fpkg install` anywhere in the server folder to install Flux and the other packages of the schema
-into its `packages` folder, and start the server with `+gamemode {{id}}`. The configuration of the
-server goes into `gamemodes/{{id}}/config/`.
+`fpkg install --locked` anywhere in the server folder to install Flux and the other packages of the
+schema, at the versions of `fpkg.lock`, into its `packages` folder, and start the server with
+`+gamemode {{id}}`. `fpkg install` also copies the binary modules of the packages into
+`garrysmod/lua/bin` and creates `garrysmod/lua/_flux`, where Flux writes generated files. The
+configuration of the server goes into `gamemodes/{{id}}/config/`.
 
 Binary modules: `gmsv_file` is installed as a dependency of `flux`. A PostgreSQL server
 uncomments `s.depends 'gmsv_pg'` in `packagespec.lua` and runs `fpkg install`. MySQL and MariaDB
@@ -20,6 +22,10 @@ Please refer to the Flux repository for the rest of the installation instruction
 
 Run `fpkg link <path to a flux-ce checkout>` in this checkout to use a checkout of Flux instead of
 the published package, then `fpkg install` for the rest of the packages.
+
+Commit `fpkg.lock`, so that every server installs the same versions with `fpkg install --locked`.
+A lock written while flux is linked locks the checkout, which a server does not have: before you
+commit it, lock the published version with `fpkg unlink flux && fpkg lock`.
 
 The schema itself lives in `schema/`, and `{{id}}.yml` picks the plugins of Flux it loads and
 sets config values. `fpkg new plugin <name>` adds a plugin to `plugins/`, which loads with the

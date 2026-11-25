@@ -132,7 +132,7 @@ impl<R: Registry> CachedRegistry<R> {
     fn needs_network(&self, what: &str) -> Result<()> {
         if self.offline {
             Err(RegistryError::Invalid(format!(
-                "--offline: {what} needs the network"
+                "offline: {what} needs the network"
             )))
         } else {
             Ok(())

@@ -76,6 +76,7 @@ fn file_lists() {
             "gamemode/cl_init.lua",
             "demo.yml",
             ".gitignore",
+            "config/.gitkeep",
             ".proofreader.yml",
             "README.md",
             "schema/sh_schema.lua",
@@ -88,11 +89,11 @@ fn file_lists() {
     );
     let with_docker = schema_files(&v, false, true);
     assert_eq!(
-        paths(&with_docker)[..14],
+        paths(&with_docker)[..15],
         paths(&schema_files(&v, false, false))[..]
     );
     assert_eq!(
-        paths(&with_docker)[14..],
+        paths(&with_docker)[15..],
         ["Dockerfile", "docker-compose.yml", ".dockerignore"]
     );
     for docker in [false, true] {
@@ -172,7 +173,10 @@ fn every_placeholder_is_substituted() {
                     !text.contains("{{") && !text.contains("}}"),
                     "{what}: {path}:\n{text}"
                 );
-                assert!(!text.is_empty() && text.ends_with('\n'), "{what}: {path}");
+                assert!(
+                    (!text.is_empty() && text.ends_with('\n')) || path.ends_with("/.gitkeep"),
+                    "{what}: {path}"
+                );
             }
         }
     }
@@ -275,8 +279,9 @@ fn the_schema_spec_is_the_one_new_wrote() {
     assert!(yml.lines().all(|l| l.len() <= 100), "{yml}");
     assert_eq!(
         file(&files, ".gitignore"),
-        "/packages/*\n/db/\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n"
+        "/packages/*\n/db/\n/config/*\n!/config/.gitkeep\n*.local.yml\n*.local.lua\n/content/resource/fonts/fa-*.ttf\n/target/\n"
     );
+    assert_eq!(file(&files, "config/.gitkeep"), "");
     assert_eq!(
         file(
             &schema_files(&vars("myschema", "My Schema"), true, true),

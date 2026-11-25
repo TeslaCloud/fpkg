@@ -344,6 +344,29 @@ fn path_rules() {
     assert!(check_member_path("demo/.gitignore").is_ok());
     assert!(check_member_path("demo/lib/").is_err());
     assert!(check_member_path("").is_err());
+    // What Windows cannot create.
+    for bad in [
+        "demo/con",
+        "demo/lib/NUL.lua",
+        "demo/Aux/x.lua",
+        "demo/com1.txt",
+        "demo/lpt9",
+        "demo/lib.",
+        "demo/lib/x.lua ",
+        "demo/dir /x.lua",
+    ] {
+        assert!(check_member_path(bad).is_err(), "{bad}");
+    }
+    for ok in [
+        "demo/console.lua",
+        "demo/lib/nullable.lua",
+        "demo/com10.lua",
+        "demo/lpt.lua",
+        "demo/auxiliary/x.lua",
+        "demo/a.b.lua",
+    ] {
+        assert!(check_member_path(ok).is_ok(), "{ok}");
+    }
 }
 
 #[test]

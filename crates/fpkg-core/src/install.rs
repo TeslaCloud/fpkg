@@ -33,13 +33,15 @@ pub enum InstallError {
     },
     #[error("fpkg.lock is stale:\n{}", fmt_stale(.0))]
     Stale(Vec<Stale>),
-    #[error("there is no fpkg.lock (run fpkg lock, or fpkg install without --locked)")]
+    #[error(
+        "there is no fpkg.lock: run fpkg install without --locked (or fpkg lock), and commit fpkg.lock"
+    )]
     NoLock,
     #[error("{}", conflict_message(.0))]
     Conflict(Vec<String>),
     /// Files that `install` would materialize over files it did not write.
     #[error("{}", crate::files::conflict_message(.0))]
-    FileConflict(Vec<String>),
+    FileConflict(Vec<crate::files::Conflict>),
     #[error("{path} is provided by both {first} and {second}, with different content")]
     FileClash {
         path: String,
@@ -48,6 +50,12 @@ pub enum InstallError {
     },
     #[error("{package}: s.binaries '{folder}' is not a folder path inside the package")]
     BadBinaries { package: String, folder: String },
+    /// A recorded or provided file whose directory is reached through a symlink.
+    #[error(
+        "{path}: {} is a symlink, and fpkg writes and removes files only in real directories; replace it with a directory",
+        .link.display()
+    )]
+    SymlinkedDir { path: String, link: PathBuf },
     #[error("{}", .path.display())]
     Io {
         path: PathBuf,
@@ -56,11 +64,42 @@ pub enum InstallError {
     },
 }
 
+/// The reasons, one line each, except that the local packages that are gone
+/// share one line (a link removed takes its nested packages with it), then
+/// what to do.
 fn fmt_stale(v: &[Stale]) -> String {
-    v.iter()
+    let gone: Vec<&str> = v
+        .iter()
+        .filter_map(|s| match s {
+            Stale::Removed(id) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut lines: Vec<String> = v
+        .iter()
+        .filter(|s| !matches!(s, Stale::Removed(_)))
         .map(|s| format!("  - {s}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    match gone.as_slice() {
+        [] => {}
+        [id] => lines.push(format!(
+            "  - {id} is locked as a local package that no longer exists"
+        )),
+        ids => lines.push(format!(
+            "  - locked as local packages that no longer exist: {}",
+            ids.join(", ")
+        )),
+    }
+    if !gone.is_empty() {
+        lines.push(
+            "fpkg.lock was written while these packages were local (in packages/, or linked with fpkg link): run `fpkg lock` to lock their registry versions".into(),
+        );
+    }
+    lines.push(
+        "Run fpkg install without --locked (or fpkg lock) to update it, and commit fpkg.lock"
+            .into(),
+    );
+    lines.join("\n")
 }
 
 fn conflict_message(ids: &[String]) -> String {
@@ -89,6 +128,9 @@ fn conflict_message(ids: &[String]) -> String {
     )
 }
 
+/// The folder of `garrysmod/lua/` that Flux writes its generated files to.
+pub const FLUX_LUA_DIR: &str = "_flux";
+
 /// Everything a command needs to know about a project.
 #[derive(Clone)]
 pub struct Loaded {
@@ -114,6 +156,15 @@ impl Loaded {
         self.root.package_deps().cloned().collect()
     }
 
+    /// The workspace packages nested in another one.
+    pub fn nested(&self) -> BTreeSet<String> {
+        self.dirs
+            .iter()
+            .filter(|(_, d)| d.outer.is_some())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     pub fn staleness(&self, lock: &Lockfile) -> Vec<Stale> {
         let deps = self.root_deps();
         staleness(
@@ -121,6 +172,7 @@ impl Loaded {
             &Current {
                 root_deps: &deps,
                 workspace: &self.workspace,
+                nested: &self.nested(),
                 paths: &self.paths,
             },
         )
@@ -141,6 +193,7 @@ impl Loaded {
             project: (&self.project.id, &self.root.version),
             root_deps: &deps,
             workspace: &self.workspace,
+            nested: &self.nested(),
             paths: &self.paths,
             lock,
             release,
@@ -189,19 +242,7 @@ pub fn load(project: &Project, env: Env, lock: Option<&Lockfile>) -> Result<Load
     }
     let mut path_locs = Vec::new();
     for d in root.dependencies.iter().filter(|d| d.kind == DepKind::Path) {
-        let rel = d.id.trim_end_matches('/').to_string();
-        let Some(id) = d.package_id().map(str::to_string) else {
-            continue;
-        };
-        let dir = project.root.join(&rel);
-        let dir = dir.canonicalize().map_err(|e| InstallError::Io {
-            path: dir.clone(),
-            source: e,
-        })?;
-        path_locs.push((
-            rel.clone(),
-            project.location_of(dir, &id, project.path_dep_lua_path(&rel)),
-        ));
+        path_locs.push(project.path_dep(d)?);
     }
     let locs: Vec<SpecLocation> = path_locs.iter().map(|(_, l)| l.clone()).collect();
     let mut paths = BTreeMap::new();
@@ -236,6 +277,8 @@ pub enum Event {
     Removing {
         id: String,
         version: Version,
+        /// The local package directory that takes its place, if one does.
+        replaced_by: Option<String>,
     },
     Replacing {
         id: String,
@@ -260,6 +303,15 @@ pub enum Event {
     SkippedSymlink {
         path: PathBuf,
     },
+    /// A binary module for a platform the server's binaries are not.
+    OtherPlatform {
+        name: String,
+        package: String,
+    },
+    /// A folder of the server that Flux needs, created.
+    CreatedDir {
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -270,6 +322,8 @@ pub struct InstallReport {
     pub repaired: Vec<(String, Version)>,
     pub removed: Vec<(String, Version)>,
     pub unchanged: Vec<(String, Version)>,
+    /// Workspace and path packages of the lock, used where they are.
+    pub local: Vec<(String, Version)>,
     /// Why the lock was re-resolved, if it was.
     pub stale: Vec<Stale>,
     pub lock_written: bool,
@@ -379,6 +433,7 @@ pub fn install(
     })?;
     for entry in &lock.packages {
         let (Source::Registry(url), Some(sha)) = (&entry.source, &entry.sha256) else {
+            report.local.push((entry.id.clone(), entry.version.clone()));
             continue;
         };
         let dir = project.package_dir(&entry.id);
@@ -446,6 +501,7 @@ pub fn install(
         progress(Event::Removing {
             id: id.clone(),
             version: marker.version.clone(),
+            replaced_by: loaded.dirs.get(&id).map(|d| d.rel.clone()),
         });
         let dir = project.package_dir(&id);
         std::fs::remove_dir_all(&dir).map_err(|e| InstallError::Io {
@@ -458,6 +514,24 @@ pub fn install(
     // 4. Copy the packages' content/ and binary modules into place.
     let sources = package_sources(project, &lock, &loaded, opts.env)?;
     crate::files::materialize(project, &sources, opts.force, &mut report, progress)?;
+
+    // 5. Flux writes generated Lua into garrysmod/lua/_flux/ from its first
+    // boot on, but cannot create the folder itself.
+    if let Some(server) = &project.server
+        && lock.get("flux").is_some()
+    {
+        let dir = server
+            .join(crate::project::GARRYSMOD_DIR)
+            .join("lua")
+            .join(FLUX_LUA_DIR);
+        if !dir.is_dir() {
+            std::fs::create_dir_all(&dir).map_err(|e| InstallError::Io {
+                path: dir.clone(),
+                source: e,
+            })?;
+            progress(Event::CreatedDir { path: dir });
+        }
+    }
     Ok(report)
 }
 
@@ -692,7 +766,15 @@ pub fn verify(project: &Project, env: Env) -> Result<VerifyReport, InstallError>
         }
     }
     let locs: Vec<SpecLocation> = to_eval.iter().map(|(l, _)| l.clone()).collect();
+    let mut sources = Vec::new();
     for ((loc, want), r) in to_eval.iter().zip(spec::load_many(&locs, env)) {
+        if let Ok(m) = &r {
+            sources.push(crate::files::Source {
+                id: loc.id.clone(),
+                dir: loc.dir.clone(),
+                binaries: m.binaries_dir().to_string(),
+            });
+        }
         match r {
             Ok(m) if &m.version == want => report.ok.push((loc.id.clone(), want.clone())),
             Ok(m) => problem(
@@ -701,6 +783,21 @@ pub fn verify(project: &Project, env: Env) -> Result<VerifyReport, InstallError>
             ),
             Err(e) => problem(&loc.id, format!("its spec does not evaluate: {e}")),
         }
+    }
+    sources.sort_by(|a, b| a.id.cmp(&b.id));
+    match crate::files::unrecorded(project, &sources) {
+        Ok(missing) => {
+            for (id, path) in missing {
+                problem(
+                    &id,
+                    format!(
+                        "provides {}, which was not copied (run fpkg install)",
+                        crate::files::shown_path(&path)
+                    ),
+                );
+            }
+        }
+        Err(e) => problem(&project.id, format!("its files cannot be checked: {e}")),
     }
     for (id, marker) in project.marked_dirs()? {
         if lock.get(&id).is_none() {

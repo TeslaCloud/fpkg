@@ -31,6 +31,7 @@ const SCHEMA: &[Template] = &[
     ("gamemode/cl_init.lua", tmpl!("schema/gamemode/cl_init.lua")),
     ("{{id}}.yml", tmpl!("schema/gamemode.yml")),
     (".gitignore", tmpl!("schema/gitignore")),
+    ("config/.gitkeep", tmpl!("schema/config/gitkeep")),
     (".proofreader.yml", tmpl!("schema/proofreader.yml")),
     ("README.md", tmpl!("schema/README.md")),
     ("schema/sh_schema.lua", tmpl!("schema/schema/sh_schema.lua")),
@@ -496,8 +497,13 @@ fn new_schema(ctx: &Ctx, vars: &Vars, minimal: bool, docker: bool) -> Result<()>
         &dir,
         &schema_files(vars, minimal, docker),
     )? {
+        let compose = if docker && !minimal {
+            "  docker compose up                    starts a server with it (README.md)\nor copy"
+        } else {
+            "Then copy"
+        };
         ctx.out.note(&format!(
-            "\nNext:\n  cd {}\n  fpkg install                         installs flux and its packages into packages/\n\nTo develop the framework itself, use a checkout of flux-ce instead of the registry:\n  fpkg link <path to a flux-ce checkout>\n  fpkg install",
+            "\nNext:\n  cd {}\n  fpkg install                         installs flux and its packages into packages/\n{compose} the folder into garrysmod/gamemodes/ of a server and run fpkg install there.\n\nTo develop the framework itself, use a checkout of flux-ce instead of the registry:\n  fpkg link <path to a flux-ce checkout>\n  fpkg install",
             vars.id
         ));
     }

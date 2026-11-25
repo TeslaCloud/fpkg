@@ -55,7 +55,8 @@ impl FromStr for Env {
 
 #[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
 pub enum SpecError {
-    #[error("{file}: {message}")]
+    /// A Lua message that starts with the chunk name already names the file.
+    #[error("{}", if message.starts_with(&format!("{file}:")) { message.clone() } else { format!("{file}: {message}") })]
     Eval { file: String, message: String },
     #[error("{file}: the evaluator {status}{}", if stderr.is_empty() { String::new() } else { format!("\n{stderr}") })]
     Crashed {

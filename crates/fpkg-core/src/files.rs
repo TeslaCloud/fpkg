@@ -3,7 +3,7 @@
 //! `garrysmod/lua/bin/`, recorded in `packages/.fpkg-files.toml`.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,14 @@ impl State {
                 raw.version
             )));
         }
+        // The file can come with a checkout: a path that leaves `content/` or
+        // `lua/bin/` would make install remove files elsewhere.
+        if let Some(f) = raw.file.iter().find(|f| !is_recordable(&f.path)) {
+            return Err(bad(format!(
+                "'{}' is not a path fpkg records (content/<path> or bin/<name>); delete the file and run fpkg install",
+                f.path
+            )));
+        }
         Ok(State {
             files: raw.file.into_iter().map(|f| (f.path.clone(), f)).collect(),
         })
@@ -113,6 +121,16 @@ impl State {
     }
 }
 
+/// Whether `path` is one fpkg records: `content/<rel>` with `rel` a valid
+/// archive member path, or `bin/<name>` with a single file name.
+fn is_recordable(path: &str) -> bool {
+    if let Some(name) = path.strip_prefix(BIN_PREFIX) {
+        return !name.contains('/') && crate::archive::check_member_path(name).is_ok();
+    }
+    path.strip_prefix(&format!("{CONTENT_DIR}/"))
+        .is_some_and(|rel| crate::archive::check_member_path(rel).is_ok())
+}
+
 /// Where a recorded path lives on disk, if it can be known.
 pub fn destination(project: &Project, path: &str) -> Option<PathBuf> {
     if let Some(name) = path.strip_prefix(BIN_PREFIX) {
@@ -145,6 +163,44 @@ fn is_symlink(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
 }
 
+/// The server binaries that tell which modules a server loads, and the
+/// platform suffix of those modules (`gmsv_<name>_<platform>.dll`).
+const SERVER_BINARIES: &[(&str, &str)] = &[
+    ("srcds_run", "linux"),
+    ("srcds_linux", "linux"),
+    ("bin/linux32/srcds", "linux"),
+    ("srcds_run_x64", "linux64"),
+    ("srcds_linux64", "linux64"),
+    ("bin/linux64/srcds", "linux64"),
+    ("srcds.exe", "win32"),
+    ("srcds_win64.exe", "win64"),
+    ("bin/win64/srcds.exe", "win64"),
+];
+
+/// The module platforms a server folder can run (`linux`, `linux64`,
+/// `win32`, `win64`), from the binaries in it; `None` when it has none of
+/// them, and every module is copied.
+pub fn server_platforms(server: &Path) -> Option<Vec<&'static str>> {
+    let mut out: Vec<&'static str> = SERVER_BINARIES
+        .iter()
+        .filter(|(file, _)| server.join(file).is_file())
+        .map(|(_, platform)| *platform)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    (!out.is_empty()).then_some(out)
+}
+
+/// The platform a module's name ends in (`gmsv_pg_linux64.dll` is `linux64`),
+/// if it is one Garry's Mod knows.
+fn module_platform(name: &str) -> Option<&'static str> {
+    let stem = name.get(..name.len().checked_sub(4)?)?;
+    let suffix = stem.rsplit('_').next()?;
+    ["linux", "linux64", "win32", "win64", "osx", "osx64"]
+        .into_iter()
+        .find(|p| suffix.eq_ignore_ascii_case(p))
+}
+
 /// A file a package wants in place.
 struct Wanted {
     package: String,
@@ -167,6 +223,7 @@ fn wanted(
     report: &mut InstallReport,
     progress: &mut dyn FnMut(Event),
 ) -> Result<BTreeMap<String, Wanted>, InstallError> {
+    let platforms = project.server.as_deref().and_then(server_platforms);
     let mut out: BTreeMap<String, Wanted> = BTreeMap::new();
     let mut add = |path: String, package: &str, src: PathBuf| -> Result<(), InstallError> {
         let sha256 = sha256_file(&src).map_err(io(&src))?;
@@ -272,6 +329,15 @@ fn wanted(
                 report.binaries_skipped.push((s.id.clone(), name));
                 continue;
             }
+            if let (Some(server), Some(platform)) = (&platforms, module_platform(&name))
+                && !server.contains(&platform)
+            {
+                progress(Event::OtherPlatform {
+                    name,
+                    package: s.id.clone(),
+                });
+                continue;
+            }
             add(format!("{BIN_PREFIX}{name}"), &s.id, src)?;
         }
     }
@@ -297,15 +363,58 @@ fn write_file(dest: &Path, src: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// Removes the empty directories between `file`'s parent and `base` (not `base`).
+/// Removes the empty directories between `file`'s parent and `base` (not
+/// `base`). `file` has to lie below `base` by normal components only, and
+/// only real directories are removed, never a symlink.
 fn prune(file: &Path, base: &Path) {
+    let Ok(rel) = file.strip_prefix(base) else {
+        return;
+    };
+    if !rel.components().all(|c| matches!(c, Component::Normal(_))) {
+        return;
+    }
     let mut dir = file.parent();
     while let Some(d) = dir {
-        if d == base || !d.starts_with(base) || std::fs::remove_dir(d).is_err() {
+        if d == base || !d.starts_with(base) || is_symlink(d) || std::fs::remove_dir(d).is_err() {
             break;
         }
         dir = d.parent();
     }
+}
+
+/// The directory below which a recorded path is written: the project root
+/// for `content/...` (a checkout may hold a symlinked `content/`), the
+/// server's `lua/bin/` for a module.
+fn top_of(project: &Project, path: &str) -> Option<PathBuf> {
+    if path.starts_with(BIN_PREFIX) {
+        base_of(project, path)
+    } else {
+        Some(project.root.clone())
+    }
+}
+
+/// Refuses a destination that a symlink between `top` and the file would
+/// take somewhere else.
+fn check_real_dirs(project: &Project, path: &str, dest: &Path) -> Result<(), InstallError> {
+    let Some(top) = top_of(project, path) else {
+        return Ok(());
+    };
+    let parent = dest.parent().unwrap_or(dest);
+    let symlinked = |link: PathBuf| InstallError::SymlinkedDir {
+        path: path.to_string(),
+        link,
+    };
+    let rel = parent
+        .strip_prefix(&top)
+        .map_err(|_| symlinked(parent.to_path_buf()))?;
+    let mut dir = top;
+    for c in rel.components() {
+        dir.push(c);
+        if is_symlink(&dir) {
+            return Err(symlinked(dir));
+        }
+    }
+    Ok(())
 }
 
 fn base_of(project: &Project, path: &str) -> Option<PathBuf> {
@@ -319,19 +428,40 @@ fn base_of(project: &Project, path: &str) -> Option<PathBuf> {
     }
 }
 
-/// Whether another gamemode project of the server records `path` (a module in
-/// the shared `garrysmod/lua/bin/`).
-fn recorded_elsewhere(project: &Project, path: &str) -> bool {
-    let Some(server) = &project.server else {
-        return false;
-    };
-    let Ok(others) = crate::project::server_projects(server) else {
-        return false;
-    };
+/// The other gamemode project of the server that records `path` (a module
+/// in the shared `garrysmod/lua/bin/`), and the package it records it for.
+fn recorded_elsewhere(project: &Project, path: &str) -> Option<(String, String)> {
+    let server = project.server.as_ref()?;
+    let others = crate::project::server_projects(server).ok()?;
     others
         .iter()
         .filter(|p| p.root != project.root)
-        .any(|p| State::read(p).is_ok_and(|s| s.files.contains_key(path)))
+        .find_map(|p| {
+            let state = State::read(p).ok()?;
+            state
+                .files
+                .get(path)
+                .map(|f| (p.id.clone(), f.package.clone()))
+        })
+}
+
+/// A recorded path as the user finds it: `content/...` in the project,
+/// `garrysmod/lua/bin/<name>` in the server.
+pub fn shown_path(path: &str) -> String {
+    match path.strip_prefix(BIN_PREFIX) {
+        Some(name) => format!("{GARRYSMOD_DIR}/lua/bin/{name}"),
+        None => path.to_string(),
+    }
+}
+
+/// A file `install` would write over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conflict {
+    /// The recorded path (`content/...` or `bin/<name>`).
+    pub path: String,
+    /// The other gamemode project of the server that installed it, and the
+    /// package it came from; `None` for a file fpkg did not write.
+    pub installed_by: Option<(String, String)>,
 }
 
 /// `install`'s last step: writes missing or changed files, removes recorded
@@ -354,16 +484,24 @@ pub fn materialize(
         let Some(dest) = destination(project, path) else {
             continue;
         };
+        check_real_dirs(project, path, &dest)?;
         let current = if dest.is_file() {
             Some(sha256_file(&dest).map_err(io(&dest))?)
         } else {
             None
         };
         let recorded = old.files.contains_key(path);
+        let conflict = || Conflict {
+            path: path.clone(),
+            installed_by: path
+                .starts_with(BIN_PREFIX)
+                .then(|| recorded_elsewhere(project, path))
+                .flatten(),
+        };
         match current {
             Some(c) if c == w.sha256 => {}
-            Some(_) if !recorded && !force => conflicts.push(path.clone()),
-            _ if dest.exists() && !dest.is_file() && !force => conflicts.push(path.clone()),
+            Some(_) if !recorded && !force => conflicts.push(conflict()),
+            _ if dest.exists() && !dest.is_file() && !force => conflicts.push(conflict()),
             _ => plan.push((path.clone(), dest)),
         }
     }
@@ -403,6 +541,7 @@ pub fn materialize(
             new.files.insert(path.clone(), entry.clone());
             continue;
         };
+        check_real_dirs(project, path, &dest)?;
         if !dest.is_file() {
             continue;
         }
@@ -414,7 +553,7 @@ pub fn materialize(
         }
         // lua/bin/ belongs to the whole server: a module another gamemode
         // project still records stays, and only this project's record goes.
-        if path.starts_with(BIN_PREFIX) && recorded_elsewhere(project, path) {
+        if path.starts_with(BIN_PREFIX) && recorded_elsewhere(project, path).is_some() {
             continue;
         }
         progress(Event::RemovingFile { path: path.clone() });
@@ -472,16 +611,53 @@ pub fn verify(project: &Project) -> Result<FilesVerify, InstallError> {
     Ok(out)
 }
 
+/// The files the packages provide that the record lacks, as (package,
+/// path): what an install that stopped short, at a conflict, did not copy.
+pub fn unrecorded(
+    project: &Project,
+    sources: &[Source],
+) -> Result<Vec<(String, String)>, InstallError> {
+    let state = State::read(project)?;
+    let want = wanted(project, sources, &mut InstallReport::default(), &mut |_| {})?;
+    Ok(want
+        .into_iter()
+        .filter(|(path, _)| !state.files.contains_key(path))
+        .map(|(path, w)| (w.package, path))
+        .collect())
+}
+
 /// The message of `InstallError::FileConflict`.
-pub fn conflict_message(paths: &[String]) -> String {
-    let list = paths
-        .iter()
-        .map(|p| format!("  - {p}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "these files exist but fpkg did not write them, and the packages provide different content:\n{list}\nMove them away, or run `fpkg install --force` to overwrite them"
-    )
+pub fn conflict_message(conflicts: &[Conflict]) -> String {
+    let (shared, foreign): (Vec<&Conflict>, Vec<&Conflict>) =
+        conflicts.iter().partition(|c| c.installed_by.is_some());
+    let mut parts = Vec::new();
+    if !foreign.is_empty() {
+        let list = foreign
+            .iter()
+            .map(|c| format!("  - {}", shown_path(&c.path)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!(
+            "these files exist but fpkg did not write them, and the packages provide different content:\n{list}\nMove them away, or run `fpkg install --force` to overwrite them"
+        ));
+    }
+    if !shared.is_empty() {
+        let list = shared
+            .iter()
+            .filter_map(|c| {
+                let (gamemode, package) = c.installed_by.as_ref()?;
+                Some(format!(
+                    "  - {} (installed by the gamemode {gamemode}, from {package})",
+                    shown_path(&c.path)
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!(
+            "another gamemode of this server installed these modules with different content:\n{list}\nThe gamemodes of a server share garrysmod/lua/bin/: give them the same version of the package, or run `fpkg install --force` to overwrite the module (fpkg verify of the other gamemode then fails)"
+        ));
+    }
+    parts.join("\n")
 }
 
 #[cfg(test)]
@@ -549,6 +725,257 @@ mod tests {
             );
         }
         assert!(!base.join("srv/garrysmod/lua").exists());
+    }
+
+    /// A gamemode project at `<base>/srv/garrysmod/gamemodes/gm`, and a file
+    /// at `<base>/victim.txt` whose content its state file could name.
+    fn project_and_victim(base: &Path) -> (Project, PathBuf, String) {
+        let gm = base.join("srv/garrysmod/gamemodes/gm");
+        std::fs::create_dir_all(gm.join("packages")).unwrap();
+        std::fs::write(gm.join("gm.txt"), "\"gm\"\n{\n}\n").unwrap();
+        let victim = base.join("victim.txt");
+        std::fs::write(&victim, "precious").unwrap();
+        let sha = sha256_file(&victim).unwrap();
+        (Project::new(gm), victim, sha)
+    }
+
+    fn write_state(project: &Project, path: &str, sha: &str) {
+        let text = format!(
+            "version = 1\n\n[[file]]\npath = {}\npackage = \"evil\"\nsha256 = \"{sha}\"\n",
+            toml::Value::String(path.to_string())
+        );
+        std::fs::write(State::path(project), text).unwrap();
+    }
+
+    #[test]
+    fn a_state_file_cannot_name_paths_outside() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        let (project, victim, sha) = project_and_victim(&base);
+        std::fs::create_dir_all(project.root.join("content")).unwrap();
+        let abs = victim.display().to_string();
+        for path in [
+            "content/../../../../../victim.txt".to_string(),
+            "content/a/../../../../../../victim.txt".into(),
+            "bin/../../../../victim.txt".into(),
+            format!("content/{abs}"),
+            abs.clone(),
+            format!("bin/{abs}"),
+            "bin/sub/x.dll".into(),
+            "content/".into(),
+            "bin/".into(),
+            "content\\..\\..\\x".into(),
+            "content/C:/x".into(),
+            "other/x".into(),
+        ] {
+            write_state(&project, &path, &sha);
+            assert!(State::read(&project).is_err(), "{path} was accepted");
+            assert!(
+                materialize(
+                    &project,
+                    &[],
+                    true,
+                    &mut InstallReport::default(),
+                    &mut |_| {}
+                )
+                .is_err(),
+                "{path}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "precious",
+                "{path}"
+            );
+        }
+        write_state(&project, "content/materials/x.vmt", &sha);
+        assert_eq!(State::read(&project).unwrap().files.len(), 1);
+        write_state(&project, "bin/gmsv_x_linux64.dll", &sha);
+        assert_eq!(State::read(&project).unwrap().files.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_removed_or_written_through_a_symlinked_directory() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        let (project, victim, sha) = project_and_victim(&base);
+        let content = project.root.join("content");
+        // A committed content/sub that points outside, then content/ itself.
+        std::fs::create_dir_all(&content).unwrap();
+        std::os::unix::fs::symlink(&base, content.join("sub")).unwrap();
+        for (link, path) in [
+            (content.join("sub"), "content/sub/victim.txt"),
+            (content.clone(), "content/victim.txt"),
+        ] {
+            if link == content {
+                std::fs::remove_dir_all(&content).unwrap();
+                std::os::unix::fs::symlink(&base, &content).unwrap();
+            }
+            write_state(&project, path, &sha);
+            let e = materialize(
+                &project,
+                &[],
+                true,
+                &mut InstallReport::default(),
+                &mut |_| {},
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&e, InstallError::SymlinkedDir { link: l, .. } if *l == link),
+                "{path}: {e}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&victim).unwrap(),
+                "precious",
+                "{path}"
+            );
+        }
+        // A package's file is not written there either.
+        std::fs::remove_file(State::path(&project)).unwrap();
+        let pkg = project.root.join("packages/evil");
+        std::fs::create_dir_all(pkg.join("content")).unwrap();
+        std::fs::write(pkg.join("content/planted.txt"), "planted").unwrap();
+        let source = Source {
+            id: "evil".into(),
+            dir: pkg,
+            binaries: "bin".into(),
+        };
+        let e = materialize(
+            &project,
+            &[source],
+            true,
+            &mut InstallReport::default(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(e, InstallError::SymlinkedDir { .. }), "{e}");
+        assert!(!base.join("planted.txt").exists());
+    }
+
+    /// A gamemode project `<server>/garrysmod/gamemodes/<id>` and a package
+    /// in it whose `bin/` holds `modules` (name, content).
+    fn gamemode_with_modules(
+        server: &Path,
+        id: &str,
+        modules: &[(&str, &str)],
+    ) -> (Project, Source) {
+        let gm = server.join("garrysmod/gamemodes").join(id);
+        std::fs::create_dir_all(gm.join("packages/gmsv_x/bin")).unwrap();
+        std::fs::write(gm.join(format!("{id}.txt")), format!("\"{id}\"\n{{\n}}\n")).unwrap();
+        std::fs::write(
+            gm.join("packagespec.lua"),
+            "Package:describe(function(s) end)\n",
+        )
+        .unwrap();
+        for (name, text) in modules {
+            std::fs::write(gm.join("packages/gmsv_x/bin").join(name), text).unwrap();
+        }
+        let source = Source {
+            id: "gmsv_x".into(),
+            dir: gm.join("packages/gmsv_x"),
+            binaries: "bin".into(),
+        };
+        (Project::new(gm), source)
+    }
+
+    #[test]
+    fn only_the_modules_of_the_server_binaries_are_copied() {
+        let t = tempfile::tempdir().unwrap();
+        let server = t.path().canonicalize().unwrap().join("srv");
+        let modules = [
+            ("gmsv_x_linux64.dll", "linux64"),
+            ("gmsv_x_win64.dll", "win64"),
+            ("gmsv_x.dll", "no platform"),
+        ];
+        let (project, source) = gamemode_with_modules(&server, "gm", &modules);
+        let bin = server.join("garrysmod/lua/bin");
+        assert_eq!(server_platforms(&server), None);
+        // The x86-64 branch on Linux: both launchers, and the engines.
+        for f in [
+            "srcds_run",
+            "srcds_run_x64",
+            "bin/linux32/srcds",
+            "bin/linux64/srcds",
+        ] {
+            std::fs::create_dir_all(server.join(f).parent().unwrap()).unwrap();
+            std::fs::write(server.join(f), "").unwrap();
+        }
+        assert_eq!(server_platforms(&server), Some(vec!["linux", "linux64"]));
+        // A Windows module someone copied in by hand is no conflict.
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("gmsv_x_win64.dll"), "another build").unwrap();
+        let mut report = InstallReport::default();
+        let mut skipped = Vec::new();
+        materialize(&project, &[source], false, &mut report, &mut |e| {
+            if let Event::OtherPlatform { name, .. } = e {
+                skipped.push(name);
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            report.files_written,
+            vec!["bin/gmsv_x.dll", "bin/gmsv_x_linux64.dll"]
+        );
+        assert_eq!(skipped, vec!["gmsv_x_win64.dll"]);
+        assert_eq!(
+            std::fs::read_to_string(bin.join("gmsv_x_win64.dll")).unwrap(),
+            "another build"
+        );
+        assert_eq!(module_platform("gmsv_pg_LINUX64.dll"), Some("linux64"));
+        assert_eq!(module_platform("gmsv_pg_linux64_extra.dll"), None);
+    }
+
+    #[test]
+    fn a_module_of_another_gamemode_is_named_in_the_conflict() {
+        let t = tempfile::tempdir().unwrap();
+        let server = t.path().canonicalize().unwrap().join("srv");
+        let (alpha, a) = gamemode_with_modules(&server, "alpha", &[("gmsv_x_linux64.dll", "1.0")]);
+        let (beta, b) = gamemode_with_modules(&server, "beta", &[("gmsv_x_linux64.dll", "2.0")]);
+        materialize(
+            &alpha,
+            &[a],
+            false,
+            &mut InstallReport::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        let e = materialize(
+            &beta,
+            &[b],
+            false,
+            &mut InstallReport::default(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let InstallError::FileConflict(conflicts) = &e else {
+            panic!("{e}");
+        };
+        assert_eq!(
+            conflicts,
+            &vec![Conflict {
+                path: "bin/gmsv_x_linux64.dll".into(),
+                installed_by: Some(("alpha".into(), "gmsv_x".into())),
+            }]
+        );
+        let text = e.to_string();
+        assert!(
+            text.contains("garrysmod/lua/bin/gmsv_x_linux64.dll (installed by the gamemode alpha, from gmsv_x)")
+                && !text.contains("fpkg did not write them"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn prune_stays_below_its_base() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        let content = base.join("gm/content");
+        std::fs::create_dir_all(content.join("a/b")).unwrap();
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        prune(&content.join("a/b/../../../../outside/f"), &content);
+        assert!(base.join("outside").is_dir());
+        prune(&content.join("a/b/f"), &content);
+        assert!(!content.join("a").exists() && content.is_dir());
     }
 
     #[test]

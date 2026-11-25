@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PackageId;
 use crate::archive::MARKER;
-use crate::spec::{SPEC_FILE, SpecLocation};
+use crate::spec::{Dependency, SPEC_FILE, SpecLocation};
 use crate::version::Version;
 
 pub const PACKAGES_DIR: &str = "packages";
@@ -20,7 +20,7 @@ pub const GAMEMODES_DIR: &str = "gamemodes";
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
     #[error(
-        "no project found from {0}: looked for a directory with {SPEC_FILE} and {PACKAGES_DIR}/, {SPEC_FILE} and a gamemode <name>.txt, or an {LOCK_FILE}, and for a Garry's Mod server folder (garrysmod/gamemodes/) around it (use --project <dir> or --server <dir>, or create one with fpkg new <kind> <name> or fpkg init --project)"
+        "not inside an fpkg project (looked from {0} up for a {SPEC_FILE}). Create one with `fpkg new schema <name>` or `fpkg init`, or pass --project <dir>"
     )]
     NotFound(PathBuf),
     #[error(
@@ -33,6 +33,14 @@ pub enum ProjectError {
     NotAServer(PathBuf),
     #[error("{path}: {message}")]
     Marker { path: PathBuf, message: String },
+    #[error(
+        "path dependency '{dep}': its directory name '{id}' is not a package id ({reason}); rename the directory"
+    )]
+    PathDepId {
+        dep: String,
+        id: String,
+        reason: &'static str,
+    },
     #[error("{path}")]
     Io {
         path: PathBuf,
@@ -219,6 +227,30 @@ impl Project {
     /// The `LUA` path of a path dependency, `<gamemode>/<dir>/`.
     pub fn path_dep_lua_path(&self, rel: &str) -> String {
         format!("{}/{}/", self.id, rel.trim_end_matches('/'))
+    }
+
+    /// A path dependency of the project manifest (`s.depends '../shared/foo'`):
+    /// its directory as written, without a trailing slash, and its spec
+    /// location. Its id is the directory name, which has to be a package id.
+    pub fn path_dep(&self, dep: &Dependency) -> Result<(String, SpecLocation), ProjectError> {
+        let rel = dep.id.trim_end_matches('/');
+        let id = dep.package_id().unwrap_or_default();
+        if let Some(reason) = PackageId::problem(id) {
+            return Err(ProjectError::PathDepId {
+                dep: dep.id.clone(),
+                id: id.to_string(),
+                reason,
+            });
+        }
+        let dir = self.root.join(rel);
+        let dir = dir.canonicalize().map_err(|e| ProjectError::Io {
+            path: dir.clone(),
+            source: e,
+        })?;
+        Ok((
+            rel.to_string(),
+            self.location_of(dir, id, self.path_dep_lua_path(rel)),
+        ))
     }
 
     /// The top-level package directories in `packages/` (those with a spec),

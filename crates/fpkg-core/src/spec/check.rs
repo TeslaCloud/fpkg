@@ -325,7 +325,7 @@ pub fn check(m: &Manifest, loc: &SpecLocation) -> Vec<Diagnostic> {
                     && let Some(reason) = PackageId::problem(id)
                 {
                     out.push(Diagnostic::error(format!(
-                        "path dependency '{}': '{id}' {reason}",
+                        "path dependency '{}': its directory name '{id}' is not a package id ({reason}); rename the directory",
                         d.id
                     )));
                 }

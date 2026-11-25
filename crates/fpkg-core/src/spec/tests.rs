@@ -579,3 +579,16 @@ fn binaries_field_rules() {
         "{d:?}"
     );
 }
+
+#[test]
+fn an_error_names_the_spec_once() {
+    let e = eval_src("Package:describe(function(s)\n  s.name = ('x'\nend)\n").unwrap_err();
+    let text = e.to_string();
+    assert!(text.starts_with("packages/t/packagespec.lua:3:"), "{text}");
+    assert_eq!(text.matches("packagespec.lua").count(), 1, "{text}");
+    let e = SpecError::Eval {
+        file: "packagespec.lua".into(),
+        message: "out of memory".into(),
+    };
+    assert_eq!(e.to_string(), "packagespec.lua: out of memory");
+}

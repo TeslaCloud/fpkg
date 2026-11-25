@@ -220,6 +220,8 @@ struct Call {
     /// The whitespace between `depends` and its argument, and its quote.
     gap: String,
     quote: char,
+    /// The byte offset after its last token (and a trailing `;`).
+    end: usize,
 }
 
 struct Block {
@@ -355,6 +357,7 @@ fn find_block(src: &str) -> Result<Block, EditError> {
                     last_line: toks[last].end_line,
                     gap,
                     quote: if quote == '[' { '\'' } else { quote },
+                    end: toks[after - 1].end,
                 });
                 i = after;
                 continue;
@@ -412,6 +415,12 @@ fn commented_call(line: &str, param: &str, id: &str) -> Option<(String, String, 
     }
     let gap = code[toks[2].end..toks[3].start].to_string();
     Some((indent, gap, quote))
+}
+
+/// The text of a line that is a `--` comment and nothing else (not `--[[`).
+fn comment_text(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("--")?;
+    (!rest.starts_with('[')).then(|| rest.trim())
 }
 
 fn indent_of(line: &str) -> &str {
@@ -475,6 +484,21 @@ pub fn add(src: &str, id: &str, constraint: Option<&str>) -> Result<String, Edit
             "{indent}{}",
             depends_line(&block.param, &gap, quote, id, constraint)
         );
+        // The comment lines right above it that start with "Uncomment" tell
+        // how to do what was just done; they go too.
+        let is_call = |t: &str| {
+            t.strip_prefix(block.param.as_str())
+                .is_some_and(|r| r.starts_with(".depends") || r.starts_with(":depends"))
+        };
+        let mut first = l;
+        while first > block.describe_line + 1
+            && comment_text(lines[first - 1]).is_some_and(|t| !is_call(t))
+        {
+            first -= 1;
+        }
+        if first < l && comment_text(lines[first]).is_some_and(|t| t.starts_with("Uncomment")) {
+            out.drain(first..l);
+        }
         return Ok(join(out, crlf, trailing));
     }
     match block.calls.last() {
@@ -529,6 +553,42 @@ fn line_start(src: &str, line: usize) -> usize {
         .nth(line - 1)
         .map(|(i, _)| i + 1)
         .unwrap_or(src.len())
+}
+
+/// Rewrites the one top-level depends call of `id` with `constraint`, keeping
+/// a comment that follows it on its line.
+pub fn set_constraint(src: &str, id: &str, constraint: &str) -> Result<String, EditError> {
+    let crlf = src.contains("\r\n");
+    let trailing = src.ends_with('\n');
+    let lines: Vec<&str> = src.lines().collect();
+    let block = find_block(src)?;
+    let call = match block
+        .calls
+        .iter()
+        .filter(|c| c.id == id)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => return Err(EditError::NotPresent(id.to_string())),
+        [c] => *c,
+        [_, c, ..] => {
+            return Err(EditError::Ambiguous(
+                c.first_line + 1,
+                "the project depends on it more than once",
+            ));
+        }
+    };
+    let last = lines.get(call.last_line).copied().unwrap_or("");
+    let tail = &last[call.end - line_start(src, call.last_line)..];
+    let line = format!(
+        "{}{}{}",
+        indent_of(lines[call.first_line]),
+        depends_line(&block.param, &call.gap, call.quote, id, Some(constraint)),
+        tail.trim_end()
+    );
+    let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    out.splice(call.first_line..=call.last_line, [line]);
+    Ok(join(out, crlf, trailing))
 }
 
 /// Removes every top-level depends call naming `id`.
@@ -688,15 +748,22 @@ mod tests {
     #[test]
     fn uncomments_a_commented_depends() {
         let out = add(TEMPLATE, "gmsv_pg", Some("~> 2.0")).unwrap();
-        let want = TEMPLATE.replace(
-            "  -- s.depends 'gmsv_pg'\n",
-            "  s.depends('gmsv_pg', '~> 2.0')\n",
+        assert_eq!(
+            out,
+            "Package:describe(function(s)\n  s.name        = 'My Schema'\n  s.version     = '0.1.0'\n\n  s.depends('flux', '~> 0.9')\n\n  s.depends('gmsv_pg', '~> 2.0')\nend)\n",
+            "the comment that says to uncomment it goes with it"
         );
-        assert_eq!(out, want);
         assert_eq!(out.matches("gmsv_pg").count(), 1, "no duplicate: {out}");
-        assert!(
-            out.contains("  -- copy its module to garrysmod/lua/bin by hand.\n"),
-            "the comment text stays"
+        // Other comments above a commented call stay.
+        let other_comment = "Package:describe(function(s)\n  -- The database driver.\n  -- s.depends 'gmsv_pg'\nend)\n";
+        assert_eq!(
+            add(other_comment, "gmsv_pg", None).unwrap(),
+            "Package:describe(function(s)\n  -- The database driver.\n  s.depends 'gmsv_pg'\nend)\n"
+        );
+        let two = "Package:describe(function(s)\n  -- Uncomment one.\n  -- s.depends 'a'\n  -- s.depends 'b'\nend)\n";
+        assert_eq!(
+            add(two, "b", None).unwrap(),
+            "Package:describe(function(s)\n  -- Uncomment one.\n  -- s.depends 'a'\n  s.depends 'b'\nend)\n"
         );
         assert_eq!(
             add(&out, "gmsv_pg", None),
@@ -737,6 +804,41 @@ mod tests {
             add(not_a_call, "b", None)
                 .unwrap()
                 .contains("  -- s.depends 'b' is optional\n")
+        );
+    }
+
+    #[test]
+    fn changes_a_constraint_in_place() {
+        assert_eq!(
+            set_constraint(FLUX, "sfs", "~> 8.0").unwrap(),
+            FLUX.replace(
+                "  s.depends     'sfs'\n",
+                "  s.depends     ('sfs', '~> 8.0')\n"
+            )
+        );
+        let src = "Package:describe(function(s)\n  s.depends('flux', '~> 0.9') -- the framework\n  s.depends(\n    'a',\n    '1.0.0'\n  )\nend)\n";
+        assert_eq!(
+            set_constraint(src, "flux", ">= 0.9.1").unwrap(),
+            "Package:describe(function(s)\n  s.depends('flux', '>= 0.9.1') -- the framework\n  s.depends(\n    'a',\n    '1.0.0'\n  )\nend)\n"
+        );
+        assert_eq!(
+            set_constraint(src, "a", "~> 1.1").unwrap(),
+            "Package:describe(function(s)\n  s.depends('flux', '~> 0.9') -- the framework\n  s.depends('a', '~> 1.1')\nend)\n"
+        );
+        assert_eq!(
+            set_constraint(FLUX, "nope", "*"),
+            Err(EditError::NotPresent("nope".into()))
+        );
+        let twice = "Package:describe(function(s)\n  s.depends 'a'\n  s.depends 'a'\nend)\n";
+        assert!(matches!(
+            set_constraint(twice, "a", "*"),
+            Err(EditError::Ambiguous(3, _))
+        ));
+        let crlf = FLUX.replace('\n', "\r\n");
+        assert!(
+            set_constraint(&crlf, "cable", "~> 2.0")
+                .unwrap()
+                .contains("  s.depends     ('cable', '~> 2.0')\r\nend)\r\n")
         );
     }
 

@@ -7,7 +7,8 @@ mod output;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::builder::{PossibleValuesParser, TypedValueParser};
+use clap::{CommandFactory, Parser, Subcommand};
 use fpkg_core::spec::Env;
 
 use output::{ColorChoice, Out};
@@ -27,39 +28,50 @@ pub const EXIT_VERIFY: u8 = 4;
 )]
 pub struct Cli {
     /// The project directory (default: found by walking up from the current
-    /// directory). `fpkg init --project` without a value creates a project.
-    #[arg(long, global = true, value_name = "DIR", num_args = 0..=1)]
-    pub project: Option<Option<PathBuf>>,
-    /// The Garry's Mod server folder (its root, or its garrysmod directory):
-    /// where `install` copies binary modules, and, when no project is found
-    /// from the current directory, the server whose gamemode projects
-    /// `install`, `verify` and `list` process
-    #[arg(long, global = true, value_name = "DIR")]
+    /// directory)
+    #[arg(long, global = true, value_name = "DIR", help_heading = GLOBAL)]
+    pub project: Option<PathBuf>,
+    /// The Garry's Mod server folder (its root or its garrysmod/): where
+    /// install copies binary modules; outside a project, the server whose
+    /// gamemodes install, verify and list process
+    #[arg(long, global = true, value_name = "DIR", help_heading = GLOBAL)]
     pub server: Option<PathBuf>,
     /// The registry (default: [registry] default, https://fluxpkg.dev/)
-    #[arg(long, global = true, value_name = "URL")]
+    #[arg(long, global = true, value_name = "URL", help_heading = GLOBAL)]
     pub registry: Option<String>,
     /// What IS_DEVELOPMENT, IS_TEST and IS_PRODUCTION say in the spec sandbox
-    #[arg(long, global = true, value_name = "ENV", default_value = "production", value_parser = parse_env)]
+    #[arg(
+        long,
+        global = true,
+        value_name = "ENV",
+        default_value = "production",
+        value_parser = PossibleValuesParser::new(["production", "development", "test"])
+            .try_map(|s| parse_env(&s)),
+        help_heading = GLOBAL
+    )]
     pub env: Env,
-    /// Use the cache only; fail with the ids it lacks
-    #[arg(long, global = true)]
+    /// Use the cache only (a file:// registry is read as well); fail with the
+    /// ids it lacks
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub offline: bool,
     /// Machine-readable output
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub json: bool,
     /// Print only errors and results
-    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    #[arg(short, long, global = true, conflicts_with = "verbose", help_heading = GLOBAL)]
     pub quiet: bool,
     /// Print more detail
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, help_heading = GLOBAL)]
     pub verbose: bool,
     /// Color in messages
-    #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto, value_name = "WHEN")]
+    #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto, value_name = "WHEN", help_heading = GLOBAL)]
     pub color: ColorChoice,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
+
+/// The heading of the options every command takes, after its own.
+const GLOBAL: &str = "Global options";
 
 fn parse_env(s: &str) -> Result<Env, String> {
     s.parse()
@@ -67,16 +79,22 @@ fn parse_env(s: &str) -> Result<Env, String> {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// With --project, turn a directory into a project (a root packagespec.lua
-    /// and packages/); a schema with a gamemode <name>.txt is then a gamemode
-    /// project. `fpkg new` scaffolds a schema, package, plugin or addon
-    Init,
+    /// Turn a directory into a project (a root packagespec.lua and packages/);
+    /// a schema with a gamemode <name>.txt is then a gamemode project. `fpkg
+    /// new` scaffolds a schema, package, plugin or addon
+    Init {
+        /// The directory (default: --project, else the current directory)
+        dir: Option<PathBuf>,
+    },
     /// Scaffold a schema (./<name>/), a package (packages/<name>/ of the
     /// project, or ./<name>/ outside one), a Flux plugin (plugins/ of the
     /// project, or ./ outside one) or a Garry's Mod addon (./<name>/)
     New {
+        /// What to scaffold
         #[arg(value_enum)]
         kind: NewKind,
+        /// Its id, which also names its folder: lowercase letters, digits and
+        /// underscores, starting with a letter
         name: String,
         /// Write only the files it needs to load
         #[arg(long)]
@@ -95,6 +113,8 @@ pub enum Cmd {
     /// Use a local checkout of a package: packages/<id> becomes a symlink to
     /// <dir>. Without <dir>, list the links
     Link {
+        /// The checkout, a directory with a packagespec.lua (a relative path
+        /// gives a relative link)
         dir: Option<PathBuf>,
         /// The package id (default: the checkout's project id)
         #[arg(long = "as", value_name = "ID")]
@@ -104,19 +124,29 @@ pub enum Cmd {
         force: bool,
     },
     /// Remove the link packages/<id>
-    Unlink { id: String },
+    Unlink {
+        /// The id of the linked package
+        id: String,
+    },
     /// Packages in the project: id, version, source, path
     List,
     /// Dependency tree with resolved versions
-    Tree { id: Option<String> },
-    /// Show a manifest (local, or the registry's with @version)
+    Tree {
+        /// Show only the tree below this package
+        id: Option<String>,
+    },
+    /// Show a manifest: the project's package of that id, else the registry's
+    /// newest version (with @version, always the registry's)
     Info {
+        /// The package id, with @<version> for a version on the registry
         #[arg(value_name = "ID[@VERSION]")]
         spec: String,
     },
-    /// Validate specs (default: the project manifest, workspace and path
-    /// packages; --all adds installed registry packages)
+    /// Validate specs (default: the project manifest and every workspace,
+    /// linked, nested and path package; --all adds installed registry
+    /// packages). Lists the packages with problems, and every one with -v
     Check {
+        /// Check only these packages of the project
         ids: Vec<String>,
         /// Also check packages installed from a registry
         #[arg(long)]
@@ -124,28 +154,40 @@ pub enum Cmd {
     },
     /// Build the archive and print its path and sha256
     Pack {
+        /// The package (default: the one the current directory is in, else
+        /// the project root of a project that is not a gamemode)
         id: Option<String>,
         /// Output directory (default: <project>/target/fpkg)
         #[arg(short = 'o', long = "out", value_name = "DIR")]
         out: Option<PathBuf>,
-        /// Print the member list
+        /// Print the members and the sha256 instead of writing the archive
         #[arg(long)]
         list: bool,
     },
     /// Resolve and write fpkg.lock, keeping locked versions
     Lock,
     /// Re-resolve the given ids (or all) to the newest matching versions
-    Update { ids: Vec<String> },
-    /// Add s.depends to the project manifest, lock, install
+    Update {
+        /// The locked packages to update (default: all of them)
+        ids: Vec<String>,
+    },
+    /// Add s.depends to the project manifest (or change its constraint),
+    /// lock, install
     Add {
+        /// The package id; without a constraint, `~> X.Y` of its newest
+        /// version is written
         #[arg(value_name = "ID[@CONSTRAINT]")]
         spec: String,
     },
     /// Remove a dependency from the project manifest, lock, install
-    Remove { id: String },
-    /// Install the locked registry packages into packages/, then copy the
-    /// packages' content/ into a gamemode project's content/ and their binary
-    /// modules into the server's garrysmod/lua/bin/
+    Remove {
+        /// The id of the dependency
+        id: String,
+    },
+    /// Write fpkg.lock if it is missing or stale, install the locked registry
+    /// packages into packages/, then copy the content/ of every package into a
+    /// gamemode project's content/ and their binary modules into the server's
+    /// garrysmod/lua/bin/
     Install {
         /// Fail (exit 3) instead of rewriting a missing or stale lock
         #[arg(long)]
@@ -159,12 +201,16 @@ pub enum Cmd {
     Verify,
     /// Search the registry
     Search {
+        /// Words to look for in package ids, names and summaries
         query: String,
+        /// The page of the results
         #[arg(long, default_value_t = 1)]
         page: u32,
     },
     /// Check, pack and upload a package
     Publish {
+        /// The package (default: the one the current directory is in, else
+        /// the project root of a project that is not a gamemode)
         id: Option<String>,
         /// Do everything but upload
         #[arg(long)]
@@ -182,8 +228,10 @@ pub enum Cmd {
     },
     /// Yank a version (or --undo a yank)
     Yank {
+        /// The version to yank
         #[arg(value_name = "ID@VERSION")]
         spec: String,
+        /// Take the yank back
         #[arg(long)]
         undo: bool,
     },
@@ -192,12 +240,14 @@ pub enum Cmd {
         #[command(subcommand)]
         action: OwnerCmd,
     },
-    /// Store a registry token
+    /// Store a token of the registry, created on its tokens page (which this
+    /// opens) and pasted here, or piped to stdin
     Login,
     /// Delete the stored token
     Logout,
     /// Print and open the docs URL of a package
     Docs {
+        /// The package id, with @<version> for another than the newest
         #[arg(value_name = "ID[@VERSION]")]
         spec: String,
     },
@@ -206,8 +256,20 @@ pub enum Cmd {
         #[command(subcommand)]
         action: CacheCmd,
     },
-    /// Copy the packages the lockfile needs from a registry into a file:// directory
-    Mirror { registry_url: String, dir: PathBuf },
+    /// Copy the registry packages of this project's fpkg.lock from a registry
+    /// into a file:// registry directory
+    Mirror {
+        /// The registry to copy from
+        registry_url: String,
+        /// The directory of the file:// registry, created if needed
+        dir: PathBuf,
+    },
+    /// Print the completion script of a shell (bash, zsh, fish, elvish,
+    /// powershell) to stdout
+    Completions {
+        /// The shell
+        shell: clap_complete::Shell,
+    },
 }
 
 /// What `fpkg new` scaffolds.
@@ -225,9 +287,25 @@ pub enum NewKind {
 
 #[derive(Subcommand, Debug)]
 pub enum OwnerCmd {
-    Add { id: String, login: String },
-    Remove { id: String, login: String },
-    List { id: String },
+    /// Add an owner (who can publish and yank)
+    Add {
+        /// The package id
+        id: String,
+        /// The owner's login on the registry
+        login: String,
+    },
+    /// Remove an owner
+    Remove {
+        /// The package id
+        id: String,
+        /// The owner's login on the registry
+        login: String,
+    },
+    /// List the owners
+    List {
+        /// The package id
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -236,6 +314,15 @@ pub enum CacheCmd {
     Clean,
     /// Print the cache directory
     Dir,
+}
+
+/// The subcommand that `--project` took as its value (`fpkg --project install`).
+fn subcommand_taken_by_project() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let command = Cli::command();
+    args.windows(2)
+        .find(|w| w[0] == "--project" && command.find_subcommand(&w[1]).is_some())
+        .map(|w| w[1].clone())
 }
 
 /// The hidden subcommand that evaluates one spec in a child process
@@ -255,7 +342,20 @@ fn main() -> ExitCode {
             args: vec![EVAL_SPEC.into()],
         });
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            if e.kind() == clap::error::ErrorKind::MissingSubcommand
+                && let Some(name) = subcommand_taken_by_project()
+            {
+                eprintln!(
+                    "error: --project took '{name}' as its directory; give the directory first: fpkg --project <dir> {name}"
+                );
+                return ExitCode::from(EXIT_HUMAN);
+            }
+            e.exit()
+        }
+    };
     let out = Out::new(cli.color, cli.quiet, cli.verbose, cli.json);
     match cmd::run(cli, out) {
         Ok(()) => ExitCode::SUCCESS,

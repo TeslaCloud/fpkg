@@ -200,6 +200,17 @@ impl Lockfile {
                 dependencies: p.dependencies,
             });
         }
+        // fpkg never writes a cycle; Flux's Package:include would recurse forever.
+        let graph: BTreeMap<String, Vec<String>> = packages
+            .iter()
+            .map(|p| (p.id.clone(), p.dependencies.clone()))
+            .collect();
+        if let Some(cycle) = crate::resolve::find_cycle(&graph) {
+            return Err(LockError::Invalid(format!(
+                "a dependency cycle: {}",
+                cycle.join(" -> ")
+            )));
+        }
         Ok(Lockfile::new(packages))
     }
 
@@ -250,13 +261,23 @@ impl Lockfile {
     }
 }
 
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes `path` through a temporary file in the same directory, renamed into
+/// place. The file is readable by everyone (mode 0644 on Unix, where the
+/// temporary file starts at 0600): a lock or a mirror is read by other users,
+/// such as a server's own account or a container's.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     std::io::Write::write_all(&mut tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    }
     tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
@@ -267,6 +288,9 @@ pub struct Current<'a> {
     pub root_deps: &'a [Dependency],
     /// Workspace packages by id: the unmarked directories in `packages/`.
     pub workspace: &'a BTreeMap<String, Manifest>,
+    /// The workspace packages nested in another one, locked only when
+    /// something depends on them.
+    pub nested: &'a BTreeSet<String>,
     /// Path dependencies by id: the project-relative directory and manifest.
     pub paths: &'a BTreeMap<String, (String, Manifest)>,
 }
@@ -386,9 +410,15 @@ pub fn staleness(lock: &Lockfile, cur: &Current<'_>) -> Vec<Stale> {
         )
         .collect();
     for (id, m, source) in &local {
-        roots.push((*id).clone());
+        let nested = matches!(source, Source::Workspace) && cur.nested.contains(*id);
+        if !nested {
+            roots.push((*id).clone());
+        }
         let Some(l) = lock.get(id) else {
-            out.push(Stale::Missing((*id).clone()));
+            // A nested package that something needs is missing as its dependency.
+            if !nested {
+                out.push(Stale::Missing((*id).clone()));
+            }
             continue;
         };
         if &l.source != source {
@@ -490,6 +520,17 @@ source = "registry+https://fluxpkg.dev/"
 sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
 "#;
 
+    #[cfg(unix)]
+    #[test]
+    fn written_files_are_readable_by_everyone() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join(crate::project::LOCK_FILE);
+        Lockfile::parse(EXAMPLE).unwrap().write(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
+    }
+
     #[test]
     fn round_trip_is_byte_stable() {
         let lock = Lockfile::parse(EXAMPLE).unwrap();
@@ -544,6 +585,8 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
             "version = 1\n[[package]]\nid = \"A\"\nversion = \"1.0.0\"\nsource = \"workspace\"\n",
             "version = 1\n[[package]]\nid = \"a\"\nversion = \"1.0.0\"\nsource = \"git+x\"\n",
             "version = 1\n[[package]]\nid = \"a\"\nversion = \"1.0.0\"\nsource = \"workspace\"\n[[package]]\nid = \"a\"\nversion = \"1.0.0\"\nsource = \"workspace\"\n",
+            "version = 1\n[[package]]\nid = \"a\"\nversion = \"1.0.0\"\nsource = \"workspace\"\ndependencies = [\"b\"]\n[[package]]\nid = \"b\"\nversion = \"1.0.0\"\nsource = \"workspace\"\ndependencies = [\"a\"]\n",
+            "version = 1\n[[package]]\nid = \"a\"\nversion = \"1.0.0\"\nsource = \"workspace\"\ndependencies = [\"a\"]\n",
         ] {
             assert!(Lockfile::parse(bad).is_err(), "{bad}");
         }
@@ -609,6 +652,7 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
             &Current {
                 root_deps: &root,
                 workspace: &w,
+                nested: &BTreeSet::new(),
                 paths: &paths,
             },
         );
@@ -632,6 +676,7 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
                 &Current {
                     root_deps: &root,
                     workspace: &w,
+                    nested: &BTreeSet::new(),
                     paths: &paths
                 }
             ),
@@ -645,6 +690,7 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
             &Current {
                 root_deps: &root2,
                 workspace: &w,
+                nested: &BTreeSet::new(),
                 paths: &paths,
             },
         );
@@ -660,6 +706,7 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
             &Current {
                 root_deps: &root,
                 workspace: &w2,
+                nested: &BTreeSet::new(),
                 paths: &paths,
             },
         );
@@ -671,6 +718,7 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
             &Current {
                 root_deps: &[],
                 workspace: &w,
+                nested: &BTreeSet::new(),
                 paths: &paths,
             },
         );
@@ -688,6 +736,7 @@ sha256 = "9a02000000000000000000000000000000000000000000000000000000000000"
             &Current {
                 root_deps: &root,
                 workspace: &w3,
+                nested: &BTreeSet::new(),
                 paths: &paths,
             },
         );

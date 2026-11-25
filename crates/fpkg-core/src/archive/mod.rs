@@ -75,7 +75,9 @@ impl From<zip::result::ZipError> for ArchiveError {
 
 /// The archive path rules for one member path (`<id>/lib/x.lua`): forward
 /// slashes, no `.` or `..`, not absolute, no drive letters, components of at
-/// most 255 bytes. UTF-8 is checked by the caller.
+/// most 255 bytes, and none that Windows cannot create (a device name such as
+/// `CON` or `nul.lua`, or a name that ends in a dot or a space). UTF-8 is
+/// checked by the caller.
 pub fn check_member_path(path: &str) -> Result<(), ArchiveError> {
     let bad = |reason: &str| {
         Err(ArchiveError::BadPath {
@@ -106,10 +108,37 @@ pub fn check_member_path(path: &str) -> Result<(), ArchiveError> {
             c if c.len() > MAX_COMPONENT_BYTES => {
                 return bad("a component is longer than 255 bytes");
             }
+            c if c.ends_with('.') || c.ends_with(' ') => {
+                return bad("a component ends in a dot or a space, which Windows drops");
+            }
+            c if is_windows_device(c) => {
+                return bad(
+                    "a component is a device name on Windows (CON, PRN, AUX, NUL, COM1, LPT1, ...)",
+                );
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Whether Windows takes a file name for a device: `CON`, `PRN`, `AUX`, `NUL`,
+/// `COM0` to `COM9` or `LPT0` to `LPT9`, in any case, also with an extension.
+fn is_windows_device(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    match stem.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        s => {
+            (s.starts_with("COM") || s.starts_with("LPT"))
+                && s.len() == 4
+                && s.as_bytes()[3].is_ascii_digit()
+        }
+    }
 }
 
 /// The fixed exclusions for a directory name.
