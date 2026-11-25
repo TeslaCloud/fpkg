@@ -468,8 +468,8 @@ syntax and LuaJIT 3.0's extensions), in one state with what a server state has:
   classes, ...), `Color` and its conversions, `hook`, `concommand`, convars and `cvars`,
   `utf8`, `baseclass`, `weapons` and `scripted_ents`;
 - `require`, which finds the modules the game loads at startup, the built-in binary modules
-  (`file`, gmsv_file's `File`, and `pg`, gmsv_pg's PostgreSQL module, see below; `mysqloo` is
-  not available yet and says so), and Lua modules in `includes/modules/`;
+  (`file`, gmsv_file's `File`, `pg`, gmsv_pg's PostgreSQL module, and `mysqloo`, MySQLOO's
+  MySQL module, see below), and Lua modules in `includes/modules/`;
 - harmless stand-ins where a server would talk to clients: `net` sends to nobody,
   `util.AddNetworkString` numbers the names, `resource.*` records nothing, the player list is
   empty, `RunConsoleCommand` runs Lua console commands and sets convars;
@@ -549,6 +549,49 @@ implemented, and an error that says so when called: `listen`, `unlisten` and not
 fails as lost), several hosts in one connection, GSSAPI and SSPI. libpq's environment
 variables (`PGHOST`, `PGPASSWORD`, ...) and its password file are not read. A build of
 `fpkg-glua` without its `postgres` feature has no `pg`, and `require('pg')` says so.
+
+**MySQL and MariaDB.** `require('mysqloo')` gives the `mysqloo` of MySQLOO 9.7.6 (the version
+of Flux's development image, built on MariaDB Connector/C 3.2), written for fpkg over MySQL's
+protocol, so the database tasks of Flux work when `database.yml` names the `mysqloo` (or
+`mysql`, `mariadb`) adapter. It has the whole Lua API of the module: `mysqloo.connect`, the
+constants, the debug counters, the `Database` (`connect`, `wait`, `ping`, `status`,
+`disconnect`, `escape`, `setCharacterSet`, `query`, `prepare`, `createTransaction`,
+`serverVersion`, `serverInfo`, `hostInfo`, `queueSize`, `abortAllQueries`, `setAutoReconnect`,
+`setMultiStatements`, `setCachePreparedStatements`, `setSSLSettings`), the queries (`start`,
+`wait`, `isRunning`, `abort`, `error`, `getData`, `lastInsert`, `affectedRows`,
+`hasMoreResults`, `getNextResults`, `setOption`, the setters of prepared queries) and the
+transactions, with the module's messages and result shapes: rows from 1, by column name
+(`OPTION_NUMERIC_FIELDS`: by position), NULL fields absent, of columns with the same name the
+last one; integer and floating-point columns as numbers (so a `BIGINT` beyond 2^53 loses its
+last digits), `BIT` as the number of its first byte, everything else (`DECIMAL`, dates and
+times, strings, `YEAR`, `JSON`) as strings, with prepared queries as with plain ones; the insert
+id and the affected rows as libmariadb keeps them (a `SELECT` keeps the last insert id, a
+prepared `SELECT` has 2^64-1 affected rows); errors as libmariadb writes them
+(`Can't connect to server on '127.0.0.1' (115)`, the server's own messages). A query runs when
+it is started, once the database is connected, and blocks until it is over; the callbacks are
+called from the `Think` hook `__MySQLOOThinkHook`, by `db:wait()`, `q:wait()` and
+`db:disconnect(true)`, never from inside `connect` or `start`, so a query that MySQLOO would
+still have in its queue when the next one starts is done already (`queueSize` and `abort` see
+only the queries started before `connect`). A connection is made at once: the TCP connection,
+the handshake, TLS and authentication together give up after 10 seconds (resolving the host
+name aside; MySQLOO waits as long as the system does). Afterwards nothing times out: a query
+blocks for as long as the server does not answer. A connection that is lost is made again for
+the statement that found out, as MySQLOO does unless `setAutoReconnect(false)`. It
+authenticates with `mysql_native_password`, `caching_sha2_password` and `sha256_password` (with
+the server's public key when there is no TLS) and goes through a Unix socket for `localhost`.
+Any one of the key, the certificate and the CA of `setSSLSettings` turns TLS on; the key and
+the certificate together are sent as the client's, and with a CA file the server's chain is
+checked against it (the name is not, as libmariadb 3.2 does; a server certificate that is itself
+in the file is taken, as OpenSSL takes it). A server without TLS gets a connection in the
+clear without an error, as with libmariadb 3.2. What the server sends is bounded before it is
+kept: a packet at 1 GiB (`Got packet bigger than 'max_allowed_packet'`), a result set at
+65535 columns, its public key at 16384 bits; a packet that cannot be read leaves the connection
+broken, to be made again by the next statement. Not implemented, and an error that says so:
+`setSSLSettings` with a `capath` or a `cipher`, `LOAD DATA LOCAL INFILE`, the authentication
+plugins `client_ed25519`, `auth_gssapi_client` and `mysql_clear_password`, and escaping text that
+is not ASCII in a multibyte character set other than UTF-8 (`big5`, `gbk`, `sjis`, ...).
+MySQLOO's update check over HTTP is not made. A build of `fpkg-glua` without its `mysql`
+feature has no `mysqloo`, and `require('mysqloo')` says so.
 
 **The virtual tree.** The runtime maps the game's paths onto disk. Inside a server
 (`<server>/garrysmod/gamemodes/<schema>`, or with `--server <dir>`), `garrysmod/` is the
